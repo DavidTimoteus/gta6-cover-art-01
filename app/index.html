@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <title>Leonida Key Art Lab — Copper Halo</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <!-- ============================ EDITOR ============================ -->
+  <div class="app-shell" id="editorRoot">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">LK</span>
+        <div class="brand-copy">
+          <h1>Leonida Key Art Lab</h1>
+          <p>Five-panel print compositor · offline edition</p>
+        </div>
+      </div>
+
+      <div class="topbar-actions" role="group" aria-label="Export cover as PNG">
+        <span class="export-label">Export PNG</span>
+        <button class="btn btn-export" type="button" data-export="square">1080 × 1080</button>
+        <button class="btn btn-export" type="button" data-export="portrait">1080 × 1350</button>
+        <button class="btn btn-export" type="button" data-export="wide">1920 × 1080</button>
+      </div>
+    </header>
+
+    <div class="workspace">
+      <aside class="sidebar" aria-label="Editor controls">
+        <!-- Sources -->
+        <section class="card" aria-labelledby="sourcesHeading">
+          <h2 class="card-title" id="sourcesHeading">01 · Sources</h2>
+          <label class="dropzone" id="dropzone" for="fileInput">
+            <input id="fileInput" type="file" accept="image/*" multiple hidden />
+            <span class="dropzone-icon" aria-hidden="true">＋</span>
+            <strong>Drop your photos here</strong>
+            <span class="dropzone-hint">or click to browse · local files only</span>
+          </label>
+
+          <p class="field-label">Sample plates</p>
+          <div class="sample-grid">
+            <button class="sample" type="button" data-sample="boulevard">
+              <img src="./samples/boulevard.jpg" alt="" aria-hidden="true" />
+              <span>Boulevard</span>
+            </button>
+            <button class="sample" type="button" data-sample="pier">
+              <img src="./samples/pier.jpg" alt="" aria-hidden="true" />
+              <span>Pier</span>
+            </button>
+          </div>
+
+          <button class="btn btn-primary btn-block" type="button" id="autoFillBtn">
+            Auto-fill panels
+          </button>
+          <p class="help">Loads both sample plates and frames every panel for you.</p>
+        </section>
+
+        <!-- Panels -->
+        <section class="card" aria-labelledby="panelsHeading">
+          <h2 class="card-title" id="panelsHeading">02 · Panels</h2>
+          <p class="field-label">Select a panel</p>
+          <div class="panel-list" id="panelList" role="group" aria-label="Panels"></div>
+
+          <div class="control-block">
+            <label class="field-label" for="panelSource">Image source</label>
+            <select id="panelSource" class="select"></select>
+          </div>
+
+          <div class="slider-row">
+            <label class="slider-label" for="zoomRange">Zoom <output id="zoomOut">1.00</output></label>
+            <input id="zoomRange" class="range" type="range" min="1" max="3" step="0.01" value="1" />
+          </div>
+          <div class="slider-row">
+            <label class="slider-label" for="xRange">Horizontal <output id="xOut">0</output></label>
+            <input id="xRange" class="range" type="range" min="-1" max="1" step="0.01" value="0" />
+          </div>
+          <div class="slider-row">
+            <label class="slider-label" for="yRange">Vertical <output id="yOut">0</output></label>
+            <input id="yRange" class="range" type="range" min="-1" max="1" step="0.01" value="0" />
+          </div>
+
+          <label class="toggle" for="autoCropToggle">
+            <input id="autoCropToggle" type="checkbox" checked />
+            <span class="toggle-track" aria-hidden="true"><span class="toggle-thumb"></span></span>
+            <span>Face-aware auto crop</span>
+          </label>
+        </section>
+
+        <!-- Caption & grade -->
+        <section class="card" aria-labelledby="captionHeading">
+          <h2 class="card-title" id="captionHeading">03 · Caption &amp; grade</h2>
+          <div class="control-block">
+            <label class="field-label" for="titleInput">Cover title</label>
+            <input id="titleInput" class="text-input" type="text" maxlength="24" value="COPPER HALO" />
+          </div>
+          <div class="control-block">
+            <label class="field-label" for="taglineInput">Tagline</label>
+            <input id="taglineInput" class="text-input" type="text" maxlength="40" value="EVERY EMPIRE HAS A PRICE" />
+          </div>
+
+          <p class="field-label">Ink grade</p>
+          <div class="grade-list" role="group" aria-label="Ink grade">
+            <button class="grade-btn is-active" type="button" data-grade="sunset">Sunset</button>
+            <button class="grade-btn" type="button" data-grade="rain">Rain</button>
+            <button class="grade-btn" type="button" data-grade="ink">Ink</button>
+          </div>
+        </section>
+      </aside>
+
+      <main class="stage">
+        <div class="stage-head">
+          <span class="stage-kicker">Live compositor</span>
+          <span class="stage-meta" id="stageMeta">COPPER HALO · LK-01 · sunset</span>
+        </div>
+        <div class="stage-frame">
+          <canvas id="previewCanvas" width="1080" height="1080" aria-label="Live poster preview"></canvas>
+        </div>
+        <p class="stage-foot">Halftone · posterized flats · grain · ink misregistration. Everything renders on this device.</p>
+      </main>
+    </div>
+  </div>
+
+  <!-- ====================== FULLSCREEN COVER ====================== -->
+  <div class="cover-preview" id="coverRoot" hidden>
+    <canvas id="coverCanvas" aria-label="Poster cover"></canvas>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
