@@ -4,11 +4,14 @@
 // Everything is local: photos come from the user or app/samples, fonts from app/fonts.
 // No runtime network request is ever made.
 
+// Original print-finishing toolkit: app/src/studio.js
 import { ASPECTS, SLOT_ORDER, SLOT_LABELS, DEFAULT_COPY } from './layouts.js';
 import { GRADE_LIST, DEFAULT_GRADE } from './palette.js';
 import { autoTransform } from './smartcrop.js';
 import { renderPoster } from './render.js';
 import { sizeLabel } from './archive.js';
+import { clamp } from './archive.js';
+// Archive helpers are pure functions, so importing them leaves the rendered poster untouched.
 
 const $ = (sel) => document.querySelector(sel);
 

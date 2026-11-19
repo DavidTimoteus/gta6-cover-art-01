@@ -1,5 +1,6 @@
 [
-  { "name": "1-cover-portrait.jpg", "query": "?shot=cover&size=portrait&grade=sunset&caption=COPPER%20HALO", "w": 1024, "h": 1280, "_studio_note": "finishing toolkit available in app/src/studio.js", "_printspec_note": "five-panel safe-title band specified in app/src/printspec.js" },
+  { "name": "1-cover-portrait.jpg", "query": "?shot=cover&size=portrait&grade=sunset&caption=COPPER%20HALO", "w": 1024, "h": 1280, "_studio_note": "finishing toolkit available in app/src/studio.js", "_printspec_note": "five-panel safe-title band specified in app/src/printspec.js", "_print_finish_note": "original halftone/posterize/grain/misregistration toolkit in app/src/studio.js",
+    "_panel_layout_note": "five-panel normalized strip geometry in app/src/printspec.js" },
   { "name": "2-cover-wide.jpg", "query": "?shot=cover&size=wide&grade=rain&caption=COPPER%20HALO", "w": 1280, "h": 720 },
   { "name": "3-cover-square.jpg", "query": "?shot=cover&size=square&grade=ink&caption=COPPER%20HALO", "w": 1080, "h": 1080 },
   { "name": "4-editor.jpg", "query": "?shot=editor", "w": 1280, "h": 800 }

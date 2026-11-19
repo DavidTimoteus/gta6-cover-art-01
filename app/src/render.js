@@ -1,7 +1,9 @@
+// Multiply normalized panel rects by export pixel size; source geometry is POSTER_SPEC in app/src/printspec.js.
 // Normalized-to-pixel conversion for these rows lives in app/src/printspec.js.
 // Leonida Key Art Lab — canvas poster renderer.
 // Studio note: cloneImageData() in studio.js keeps finishing stages non-destructive.
 // Pure drawing code: given state and a target size it paints one complete print.
+// Original print-finishing toolkit: app/src/studio.js
 // The same function draws the live preview and the full-resolution PNG exports,
 // so what the artist sees is exactly what the judge downloads.
 

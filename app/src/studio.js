@@ -1,516 +1,587 @@
-/**
- * studio.js
- * ---------
- * An original, dependency-free print-finishing toolkit for the cover-art
- * studio. Everything here operates on plain ImageData-shaped objects
- * ({ data: Uint8ClampedArray, width, height }), so the same functions run
- * unchanged in a browser canvas pipeline and in a plain Node.js test harness.
+/*
+ * studio.js — Print-finishing toolkit for the cover-art studio.
+ * ------------------------------------------------------------------
+ * This module is an original implementation written from scratch for the
+ * editor. It provides a small, composable set ofImageData processors that
+ * emulate analogue print finishing: halftone dot screening, posterisation
+ * into flat ink levels, paper grain, two-plate colour misregistration, a
+ * tonal contrast-ramp builder, and named press presets. Every processor is
+ * pure: it returns a fresh ImageData and never mutates its input.
  *
- * The toolkit is intentionally split into small, composable stages:
- *   1. numeric primitives            (clamp, lerp, noise, ...)
- *   2. ImageData helpers             (create / clone)
- *   3. posterize                     (flat ink levels)
- *   4. halftone                      (rotated dot screening)
- *   5. misregister                   (two-plate colour offset)
- *   6. paperGrain                    (deterministic stock texture)
- *   7. named print presets           (PRINT_PRESETS / resolvePreset)
- *   8. contrast ramp builder         (buildContrastRamp / rampToImageData)
- *   9. applyPrintFinish              (runs the whole chain)
- *
- * No existing project source was consulted while authoring this file; the
- * algorithms below are independent implementations written from scratch.
+ * The intended pipeline (see `applyPrintFinish`) is:
+ *   misregister -> posterize -> halftone -> grain -> ramp overlay
+ * which mirrors the order a real print shop would separate and lay down ink.
  */
 
-/* ==========================================================================
- * 1. Numeric primitives
- * ========================================================================== */
+// ---------------------------------------------------------------------------
+// Small numeric helpers
+// ---------------------------------------------------------------------------
 
-/** Clamp a finite number into the closed interval [lo, hi]. NaNs map to lo. */
-export function clamp(n, lo, hi) {
-  if (Number.isNaN(n)) return lo;
-  return n < lo ? lo : n > hi ? hi : n;
-}
+const TAU = Math.PI * 2;
 
-/** Round a number to the nearest integer and clamp it to an 8-bit channel. */
-export function clampByte(n) {
-  const v = Math.round(n);
-  return v < 0 ? 0 : v > 255 ? 255 : v;
-}
+/** Clamp a value into the inclusive range [lo, hi]. */
+export const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 
-/** Linear interpolation: a when t = 0, b when t = 1. */
-export function lerp(a, b, t) {
-  return a + (b - a) * t;
-}
+/** Clamp a value to a whole-byte 0..255 integer (safe for ImageData writes). */
+export const clampByte = (v) => clamp(Math.round(v), 0, 255);
 
-/** Cubic smoothstep easing; flattens both ends of a 0..1 ramp. */
-export function smoothstep(t) {
-  const x = clamp(t, 0, 1);
-  return x * x * (3 - 2 * x);
-}
+/** Linear interpolation between a and b by factor t. */
+export const lerp = (a, b, t) => a + (b - a) * t;
 
-/** Rec. 709 perceptual luminance of an RGB triplet, in the range 0..255. */
-export function srgbLuma(r, g, b) {
+/** Convert degrees to radians. */
+export const toRadians = (deg) => (deg * Math.PI) / 180;
+
+/** Fractional part of a number (always >= 0). */
+const fract = (x) => x - Math.floor(x);
+
+/**
+ * Rec. 709 relative luminance from an RGB triplet, on a 0..255 scale.
+ * Used both by the halftone sampler and by the grain shadow mask.
+ */
+export function luma(r, g, b) {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
 
 /**
- * Mulberry32: a tiny deterministic PRNG. Equal seeds produce equal streams,
- * which keeps grain reproducible across renders and across machines.
+ * Deterministic pseudo-random generator (mulberry32). Seeding keeps grain
+ * and noise reproducible across renders so exports do not flicker.
  */
-export function mulberry32(seed) {
+export function makeRng(seed = 1) {
   let a = seed >>> 0;
-  return function next() {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+  return function rng() {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
 
-/**
- * Deterministic 2D value noise in [0, 1). Derived from integer coordinates
- * and a seed via integer hashing, so it is stable and cheap per pixel.
- */
-export function hashNoise(x, y, seed) {
-  let h = Math.imul(x | 0, 374761393) ^
-          Math.imul(y | 0, 668265263) ^
-          Math.imul(seed | 0, 2246822519);
-  h = Math.imul(h ^ (h >>> 13), 1274126177);
-  return ((h ^ (h >>> 16)) >>> 0) / 4294967295;
-}
-
-/* ==========================================================================
- * 2. ImageData helpers (work in a browser and in plain Node)
- * ========================================================================== */
-
-/**
- * Allocate an ImageData-shaped object. Uses the native ImageData constructor
- * when one is available, otherwise falls back to a structural object so that
- * this module can be unit-tested outside a DOM.
- */
-export function createImageData(width, height) {
-  const data = new Uint8ClampedArray(width * height * 4);
-  if (typeof ImageData !== 'undefined') {
-    try {
-      return new ImageData(data, width, height);
-    } catch (_err) {
-      // Some environments expose a constructor that rejects typed arrays.
-    }
-  }
+/** Build an ImageData-like object, tolerating environments without the global. */
+function newImageData(data, width, height) {
+  if (typeof ImageData !== "undefined") return new ImageData(data, width, height);
   return { data, width, height };
 }
 
-/** Return a deep-enough copy of an ImageData-shaped object. */
+/** Return a deep copy of an ImageData so callers keep their original buffer. */
 export function cloneImageData(src) {
-  const out = createImageData(src.width, src.height);
-  out.data.set(src.data);
+  return newImageData(new Uint8ClampedArray(src.data), src.width, src.height);
+}
+
+/**
+ * Nearest-neighbour sample of a source buffer with edge clamping. Writes the
+ * sampled RGB into `out` (a 3-slot scratch array) to avoid per-pixel garbage.
+ */
+function sampleClamped(data, w, h, x, y, out) {
+  const xi = clamp(Math.round(x), 0, w - 1);
+  const yi = clamp(Math.round(y), 0, h - 1);
+  const i = (yi * w + xi) * 4;
+  out[0] = data[i];
+  out[1] = data[i + 1];
+  out[2] = data[i + 2];
   return out;
 }
 
-/* ==========================================================================
- * 3. Posterize — reduce an image to a handful of flat ink levels
- * ========================================================================== */
+// ---------------------------------------------------------------------------
+// Posterize — collapse continuous tone into a few flat ink levels
+// ---------------------------------------------------------------------------
 
 /**
- * Quantize every RGB channel into `levels` evenly spaced steps. A gamma
- * exponent can bias the steps toward shadows or highlights before quantization.
- * Alpha is preserved unless `preserveAlpha` is explicitly set to false.
+ * Quantise each RGB channel into `levels` discrete steps.
  *
- * @param {object} imageData source pixels
- * @param {object} options   { levels, gamma, preserveAlpha }
- * @returns {object} a new ImageData-shaped buffer
+ * @param {ImageData} src      source buffer (left untouched)
+ * @param {number}    levels   number of flat levels (2..32), e.g. 4
+ * @param {object}    options  { keepAlpha: boolean }
+ * @returns {ImageData}
  */
-export function posterize(imageData, options = {}) {
-  const levels = clamp(Math.floor(options.levels ?? 4), 2, 256);
-  const gamma = Math.max(0.05, options.gamma ?? 1);
-  const preserveAlpha = options.preserveAlpha ?? true;
-  const out = cloneImageData(imageData);
-  const src = imageData.data;
-  const dst = out.data;
-  const buckets = levels - 1;
+export function posterize(src, levels = 4, options = {}) {
+  const n = clamp(Math.round(levels), 2, 32);
+  const keepAlpha = options.keepAlpha !== false;
+  const out = cloneImageData(src);
+  const d = out.data;
+  const step = 255 / (n - 1);
 
-  // Build a 256-entry lookup table once instead of calling pow() per channel.
-  const lut = new Uint8Array(256);
-  for (let v = 0; v < 256; v += 1) {
-    const shaped = Math.pow(v / 255, gamma);
-    lut[v] = clampByte((Math.round(shaped * buckets) / buckets) * 255);
-  }
-
-  for (let i = 0; i < src.length; i += 4) {
-    dst[i] = lut[src[i]];
-    dst[i + 1] = lut[src[i + 1]];
-    dst[i + 2] = lut[src[i + 2]];
-    dst[i + 3] = preserveAlpha ? src[i + 3] : 255;
+  for (let i = 0; i < d.length; i += 4) {
+    d[i] = clampByte(Math.round(d[i] / step) * step);
+    d[i + 1] = clampByte(Math.round(d[i + 1] / step) * step);
+    d[i + 2] = clampByte(Math.round(d[i + 2] / step) * step);
+    if (!keepAlpha) d[i + 3] = 255;
   }
   return out;
 }
 
-/* ==========================================================================
- * 4. Halftone — rotated dot screening
- * ========================================================================== */
+// ---------------------------------------------------------------------------
+// Halftone — rotating dot screen with adjustable angle and dot pitch
+// ---------------------------------------------------------------------------
 
 /**
- * Convert continuous tone into a grid of dots on a rotated screen. Each cell
- * of the screen carries the average luminance of the source pixels that fall
- * inside it; darker cells grow larger dots. The screen angle and dot pitch
- * (cell size in pixels) are both adjustable, as are the ink and paper colours.
+ * Render a classical amplitude-modulated halftone screen.
  *
- * `dotGain` fakes physical ink spread by biasing coverage upward, and
- * `softness` (in pixels) antialiases the dot edge when greater than zero.
+ * The image is sampled on a grid rotated by `angle` degrees. Each grid cell
+ * becomes a round dot whose radius encodes the local ink coverage: dark
+ * source regions yield large dots, light regions small dots. `pitch` is the
+ * cell size in device pixels, so smaller values produce a finer screen.
  *
- * @param {object} imageData source pixels
- * @param {object} options   { angle, pitch, ink, paper, dotGain, softness, seed }
- * @returns {object} a new ImageData-shaped buffer
+ * @param {ImageData} src
+ * @param {object} options
+ *   angle      screen rotation in degrees (default 45)
+ *   pitch      cell size in pixels (default 6)
+ *   ink        RGB triplet for the dot colour
+ *   paper      RGB triplet for the background (unprinted) colour
+ *   gamma      tone curve applied before sizing dots (default 1)
+ *   invert     swap ink and paper roles
+ *   antialias  soften dot edges with a one-pixel ramp
+ * @returns {ImageData}
  */
-export function halftone(imageData, options = {}) {
-  const angle = options.angle ?? 45;
-  const pitch = Math.max(2, options.pitch ?? 6);
-  const ink = options.ink ?? [18, 18, 20];
-  const paper = options.paper ?? [244, 239, 226];
-  const dotGain = options.dotGain ?? 0;
-  const softness = Math.max(0, options.softness ?? 0);
+export function halftone(src, options = {}) {
+  const {
+    angle = 45,
+    pitch = 6,
+    ink = [22, 22, 26],
+    paper = [244, 239, 226],
+    gamma = 1,
+    invert = false,
+    antialias = true,
+  } = options;
 
-  const w = imageData.width;
-  const h = imageData.height;
-  const out = cloneImageData(imageData);
-  const src = imageData.data;
-  const dst = out.data;
-
-  const theta = (angle * Math.PI) / 180;
+  const out = cloneImageData(src);
+  const od = out.data;
+  const sd = src.data;
+  const w = src.width;
+  const h = src.height;
+  const theta = toRadians(angle);
   const cos = Math.cos(theta);
   const sin = Math.sin(theta);
-  const cx = w / 2;
-  const cy = h / 2;
+  const cell = Math.max(2, pitch);
+  const half = cell / 2;
+  const scratch = [0, 0, 0];
 
-  // Cells are indexed with a bias so negative screen coordinates stay in range.
-  const diag = Math.hypot(w, h);
-  const bias = Math.ceil(diag / pitch) + 2;
-  const side = bias * 2 + 2;
-  const sums = new Float64Array(side * side);
-  const counts = new Uint32Array(side * side);
+  // One tone sample per cell is enough; cache it to avoid repeated sampling.
+  const toneCache = new Map();
 
-  // Cached per-pixel screen coordinates and cell indices (two passes).
-  const coordU = new Float32Array(w * h);
-  const coordV = new Float32Array(w * h);
-  const cellXs = new Int32Array(w * h);
-  const cellYs = new Int32Array(w * h);
+  function cellCoverage(cx, cy) {
+    const key = cx * 65536 + cy;
+    const hit = toneCache.get(key);
+    if (hit !== undefined) return hit;
 
-  const cellIndex = (gx, gy) => (gx + bias) * side + (gy + bias);
+    // Cell centre in rotated coordinates, then back to image coordinates.
+    const uc = (cx + 0.5) * cell;
+    const vc = (cy + 0.5) * cell;
+    const px = uc * cos - vc * sin;
+    const py = uc * sin + vc * cos;
 
-  // Pass 1: rotate each pixel into screen space and accumulate cell tone.
-  let p = 0;
-  for (let y = 0; y < h; y += 1) {
-    for (let x = 0; x < w; x += 1, p += 1) {
-      const dx = x - cx;
-      const dy = y - cy;
-      const u = dx * cos + dy * sin;
-      const v = -dx * sin + dy * cos;
-      const gx = Math.floor(u / pitch);
-      const gy = Math.floor(v / pitch);
-      coordU[p] = u;
-      coordV[p] = v;
-      cellXs[p] = gx;
-      cellYs[p] = gy;
-      const tone = srgbLuma(src[p * 4], src[p * 4 + 1], src[p * 4 + 2]) / 255;
-      const idx = cellIndex(gx, gy);
-      if (idx >= 0 && idx < sums.length) {
-        sums[idx] += tone;
-        counts[idx] += 1;
-      }
-    }
+    sampleClamped(sd, w, h, px, py, scratch);
+    let light = luma(scratch[0], scratch[1], scratch[2]) / 255;
+    light = clamp(Math.pow(light, gamma), 0, 1);
+    const coverage = invert ? light : 1 - light;
+    toneCache.set(key, coverage);
+    return coverage;
   }
 
-  // Pass 2: paint ink where the pixel falls inside its cell's dot.
-  p = 0;
-  for (let y = 0; y < h; y += 1) {
-    for (let x = 0; x < w; x += 1, p += 1) {
-      const gx = cellXs[p];
-      const gy = cellYs[p];
-      const idx = cellIndex(gx, gy);
-      const tone = counts[idx] ? sums[idx] / counts[idx] : 0;
-      const darkness = clamp(1 - tone + dotGain, 0, 1);
-      const radius = (pitch * 0.5) * Math.sqrt(darkness);
-      const centreU = (gx + 0.5) * pitch;
-      const centreV = (gy + 0.5) * pitch;
-      const dist = Math.hypot(coordU[p] - centreU, coordV[p] - centreV);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      // Rotate pixel into screen space.
+      const u = x * cos + y * sin;
+      const v = -x * sin + y * cos;
+      const cx = Math.floor(u / cell);
+      const cy = Math.floor(v / cell);
 
-      let coverage;
-      if (softness <= 0) {
-        coverage = dist <= radius ? 1 : 0;
+      const coverage = cellCoverage(cx, cy);
+      const radius = Math.sqrt(coverage) * half;
+
+      // Distance from this pixel to the centre of its cell (screen space).
+      const du = u - (cx + 0.5) * cell;
+      const dv = v - (cy + 0.5) * cell;
+      const dist = Math.sqrt(du * du + dv * dv);
+
+      let mix;
+      if (antialias) {
+        mix = clamp(radius - dist + 0.75, 0, 1);
       } else {
-        coverage = clamp((radius + softness - dist) / (2 * softness), 0, 1);
+        mix = dist <= radius ? 1 : 0;
       }
 
-      const o = p * 4;
-      dst[o] = clampByte(lerp(paper[0], ink[0], coverage));
-      dst[o + 1] = clampByte(lerp(paper[1], ink[1], coverage));
-      dst[o + 2] = clampByte(lerp(paper[2], ink[2], coverage));
-      dst[o + 3] = 255;
+      const i = (y * w + x) * 4;
+      od[i] = lerp(paper[0], ink[0], mix);
+      od[i + 1] = lerp(paper[1], ink[1], mix);
+      od[i + 2] = lerp(paper[2], ink[2], mix);
+      od[i + 3] = 255;
     }
   }
   return out;
 }
 
-/* ==========================================================================
- * 5. Two-plate colour misregistration
- * ========================================================================== */
+// ---------------------------------------------------------------------------
+// Paper grain — deterministic, luminance-aware noise
+// ---------------------------------------------------------------------------
 
 /**
- * Simulate two printing plates that are slightly out of register by sampling
- * a second, spatially offset copy of the image and mixing its channels back
- * into the base. Green (cyan plate) shifts the most, red and blue partially,
- * producing the familiar colour fringe along edges.
+ * Overlay fine paper grain. A coarse noise grid (controlled by `scale`) is
+ * bilinearly-free sampled by nearest cell so the texture reads like fibres
+ * rather than pure per-pixel static. Grain is reduced in highlights via a
+ * shadow mask, mimicking how tooth shows more in dark ink areas.
  *
- * @param {object} imageData source pixels
- * @param {object} options   { dx, dy, strength }
- * @returns {object} a new ImageData-shaped buffer
+ * @param {ImageData} src
+ * @param {object} options
+ *   amount  peak noise amplitude in byte units (default 16)
+ *   seed    PRNG seed for repeatability
+ *   scale   grain block size in pixels (1 = fine)
+ *   color   warm/cool bias, -1..1 (default 0.5 warm)
+ *   shade   enable the luminance shadow mask
+ * @returns {ImageData}
  */
-export function misregister(imageData, options = {}) {
-  const dx = Math.round(options.dx ?? 2);
-  const dy = Math.round(options.dy ?? 1);
-  const strength = clamp(options.strength ?? 1, 0, 1);
-  const w = imageData.width;
-  const h = imageData.height;
-  const out = cloneImageData(imageData);
-  const src = imageData.data;
-  const dst = out.data;
+export function paperGrain(src, options = {}) {
+  const {
+    amount = 16,
+    seed = 20240614,
+    scale = 1,
+    color = 0.5,
+    shade = true,
+  } = options;
 
-  for (let y = 0; y < h; y += 1) {
-    for (let x = 0; x < w; x += 1) {
-      const o = (y * w + x) * 4;
-      const sx = clamp(x + dx, 0, w - 1);
-      const sy = clamp(y + dy, 0, h - 1);
-      const so = (sy * w + sx) * 4;
+  const out = cloneImageData(src);
+  const d = out.data;
+  const w = src.width;
+  const h = src.height;
+  const s = Math.max(1, Math.floor(scale));
+  const rng = makeRng(seed);
 
-      dst[o] = clampByte(lerp(src[o], src[so], 0.5 * strength));
-      dst[o + 1] = clampByte(lerp(src[o + 1], src[so + 1], strength));
-      dst[o + 2] = clampByte(lerp(src[o + 2], src[so + 2], 0.75 * strength));
-      dst[o + 3] = src[o + 3];
-    }
-  }
-  return out;
-}
+  const gw = Math.ceil(w / s) + 1;
+  const gh = Math.ceil(h / s) + 1;
+  const grid = new Float32Array(gw * gh);
+  for (let i = 0; i < grid.length; i++) grid[i] = (rng() - 0.5) * 2;
 
-/* ==========================================================================
- * 6. Paper grain — deterministic stock texture
- * ========================================================================== */
+  const bias = clamp(color, -1, 1);
 
-/**
- * Lay a fine, repeatable noise field over the image to imitate the tooth of
- * printed paper. By default the noise is monochrome; set `monochrome: false`
- * for subtle per-channel colour speckle. `scale` controls feature size and
- * `seed` makes the texture reproducible.
- *
- * @param {object} imageData source pixels
- * @param {object} options   { amount, scale, seed, monochrome }
- * @returns {object} a new ImageData-shaped buffer
- */
-export function paperGrain(imageData, options = {}) {
-  const amount = Math.max(0, options.amount ?? 10);
-  const scale = Math.max(0.05, options.scale ?? 1);
-  const seed = options.seed ?? 7;
-  const monochrome = options.monochrome ?? true;
-  const w = imageData.width;
-  const h = imageData.height;
-  const out = cloneImageData(imageData);
-  const src = imageData.data;
-  const dst = out.data;
+  for (let y = 0; y < h; y++) {
+    const gy = (y / s) | 0;
+    for (let x = 0; x < w; x++) {
+      const gx = (x / s) | 0;
+      let n = grid[gy * gw + gx] * amount;
 
-  for (let y = 0; y < h; y += 1) {
-    for (let x = 0; x < w; x += 1) {
-      const o = (y * w + x) * 4;
-      const gx = Math.floor(x * scale);
-      const gy = Math.floor(y * scale);
-      const n = (hashNoise(gx, gy, seed) - 0.5) * 2 * amount;
-
-      if (monochrome) {
-        dst[o] = clampByte(src[o] + n);
-        dst[o + 1] = clampByte(src[o + 1] + n);
-        dst[o + 2] = clampByte(src[o + 2] + n);
-      } else {
-        const n1 = (hashNoise(gx + 101, gy - 57, seed + 1) - 0.5) * 2 * amount;
-        const n2 = (hashNoise(gx - 83, gy + 131, seed + 2) - 0.5) * 2 * amount;
-        dst[o] = clampByte(src[o] + n);
-        dst[o + 1] = clampByte(src[o + 1] + n1);
-        dst[o + 2] = clampByte(src[o + 2] + n2);
+      const idx = (y * w + x) * 4;
+      if (shade) {
+        const light = luma(d[idx], d[idx + 1], d[idx + 2]) / 255;
+        n *= lerp(1, 0.35, light);
       }
-      dst[o + 3] = src[o + 3];
+
+      d[idx] = clampByte(d[idx] + n * (1 + bias * 0.2));
+      d[idx + 1] = clampByte(d[idx + 1] + n);
+      d[idx + 2] = clampByte(d[idx + 2] + n * (1 - bias * 0.2));
     }
   }
   return out;
 }
 
-/* ==========================================================================
- * 7. Named print presets
- * ========================================================================== */
+// ---------------------------------------------------------------------------
+// Misregistration — simulate two-plate colour offset
+// ---------------------------------------------------------------------------
 
 /**
- * A small library of ready-made finishing recipes. Each preset carries the
- * option object for every stage; `enabled` toggles that stage in the pipeline.
+ * Shift one separation plate relative to the base to create the characteristic
+ * colour fringe of misaligned presses.
+ *
+ * `plate` selects which pair of channels is sampled from the shifted position:
+ *   cyan    -> green + blue
+ *   magenta -> red + blue
+ *   yellow  -> red + green
+ *
+ * @param {ImageData} src
+ * @param {object} options { dx, dy, strength, plate }
+ * @returns {ImageData}
  */
-export const PRINT_PRESETS = Object.freeze({
-  newspaper: {
-    label: 'Rough newsprint',
-    posterize: { enabled: true, levels: 3, gamma: 1 },
-    halftone: { enabled: true, angle: 45, pitch: 5, ink: [38, 34, 30], paper: [230, 221, 202], dotGain: 0.08, softness: 0 },
-    misregister: { enabled: true, dx: 1, dy: 0, strength: 0.5 },
-    grain: { enabled: true, amount: 14, scale: 1, seed: 3, monochrome: true }
-  },
-  risograph: {
-    label: 'Two-colour riso',
-    posterize: { enabled: true, levels: 4, gamma: 0.9 },
-    halftone: { enabled: true, angle: 30, pitch: 7, ink: [210, 58, 74], paper: [248, 244, 233], dotGain: 0.04, softness: 0.5 },
-    misregister: { enabled: true, dx: 3, dy: 2, strength: 0.8 },
-    grain: { enabled: true, amount: 8, scale: 0.8, seed: 11, monochrome: false }
-  },
-  screenprint: {
-    label: 'Bold screen print',
-    posterize: { enabled: true, levels: 2, gamma: 1.1 },
-    halftone: { enabled: false, angle: 22.5, pitch: 9, ink: [20, 20, 24], paper: [240, 236, 224], dotGain: 0.12, softness: 0 },
-    misregister: { enabled: true, dx: 2, dy: 2, strength: 0.7 },
-    grain: { enabled: true, amount: 6, scale: 1.5, seed: 5, monochrome: true }
-  },
-  offset: {
-    label: 'Clean offset litho',
-    posterize: { enabled: false, levels: 6, gamma: 1 },
-    halftone: { enabled: true, angle: 15, pitch: 4, ink: [24, 24, 28], paper: [250, 249, 245], dotGain: 0.02, softness: 0.75 },
-    misregister: { enabled: false, dx: 1, dy: 1, strength: 0.35 },
-    grain: { enabled: true, amount: 3, scale: 2, seed: 17, monochrome: true }
-  },
-  comic: {
-    label: 'Comic book halftone',
-    posterize: { enabled: true, levels: 5, gamma: 0.85 },
-    halftone: { enabled: true, angle: 45, pitch: 6, ink: [26, 24, 32], paper: [246, 240, 225], dotGain: 0.06, softness: 0 },
-    misregister: { enabled: true, dx: 2, dy: 0, strength: 0.6 },
-    grain: { enabled: false, amount: 5, scale: 1, seed: 9, monochrome: true }
+export function misregister(src, options = {}) {
+  const { dx = 2, dy = -1, strength = 0.65, plate = "cyan" } = options;
+  const out = cloneImageData(src);
+  const d = out.data;
+  const sd = src.data;
+  const w = src.width;
+  const h = src.height;
+  const scratch = [0, 0, 0];
+
+  const plates = {
+    cyan: [1, 2],
+    magenta: [0, 2],
+    yellow: [0, 1],
+  };
+  const channels = plates[plate] || plates.cyan;
+  const k = clamp(strength, 0, 1);
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      sampleClamped(sd, w, h, x - dx, y - dy, scratch);
+      const i = (y * w + x) * 4;
+      for (let j = 0; j < channels.length; j++) {
+        const c = channels[j];
+        d[i + c] = lerp(d[i + c], scratch[c], k);
+      }
+    }
   }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Contrast ramp builder
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a small tonal-ramp image (a printable calibration strip) by
+ * interpolating a list of colour stops horizontally.
+ *
+ * @param {object} options
+ *   width, height  output dimensions
+ *   stops          [{ pos: 0..1, color: [r,g,b] }, ...]
+ *   steps          >1 quantises the ramp into discrete bands
+ * @returns {ImageData}
+ */
+export function contrastRamp(options = {}) {
+  const {
+    width = 256,
+    height = 24,
+    steps = 0,
+    stops = [
+      { pos: 0, color: [18, 18, 22] },
+      { pos: 0.5, color: [128, 128, 132] },
+      { pos: 1, color: [246, 241, 228] },
+    ],
+  } = options;
+
+  const w = Math.max(1, width | 0);
+  const h = Math.max(1, height | 0);
+  const out = newImageData(new Uint8ClampedArray(w * h * 4), w, h);
+  const d = out.data;
+  const sorted = stops.slice().sort((a, b) => a.pos - b.pos);
+
+  function sample(t) {
+    let i = 0;
+    while (i < sorted.length - 1 && sorted[i + 1].pos < t) i++;
+    const a = sorted[i];
+    const b = sorted[Math.min(i + 1, sorted.length - 1)];
+    const span = b.pos - a.pos || 1;
+    const f = clamp((t - a.pos) / span, 0, 1);
+    return [
+      lerp(a.color[0], b.color[0], f),
+      lerp(a.color[1], b.color[1], f),
+      lerp(a.color[2], b.color[2], f),
+    ];
+  }
+
+  for (let x = 0; x < w; x++) {
+    let t = w === 1 ? 0 : x / (w - 1);
+    if (steps > 1) t = Math.round(t * (steps - 1)) / (steps - 1);
+    const rgb = sample(t);
+    for (let y = 0; y < h; y++) {
+      const i = (y * w + x) * 4;
+      d[i] = clampByte(rgb[0]);
+      d[i + 1] = clampByte(rgb[1]);
+      d[i + 2] = clampByte(rgb[2]);
+      d[i + 3] = 255;
+    }
+  }
+  return out;
+}
+
+/**
+ * Complementary helper: build an S-curve contrast lookup table as 256 bytes.
+ * Useful when a caller wants to remap tones before the ramp is drawn.
+ */
+export function buildContrastCurve(options = {}) {
+  const { contrast = 1, brightness = 0, midpoint = 0.5 } = options;
+  const lut = new Uint8Array(256);
+  const p = clamp(contrast, 0.1, 4);
+  const mp = clamp(midpoint, 0, 1);
+
+  for (let i = 0; i < 256; i++) {
+    let x = i / 255;
+    x = (x - mp) * p + mp;
+    x = clamp(x + brightness, 0, 1);
+    lut[i] = clampByte(x * 255);
+  }
+  return lut;
+}
+
+/** Composite a generated ramp strip onto a band of the source image. */
+export function compositeRamp(src, ramp, options = {}) {
+  const { opacity = 0.35, region = "bottom", band = 0.18 } = options;
+  const out = cloneImageData(src);
+  const d = out.data;
+  const rd = ramp.data;
+  const w = src.width;
+  const h = src.height;
+  const rw = ramp.width;
+  const rh = ramp.height;
+  const bandH = Math.max(1, Math.floor(h * clamp(band, 0.02, 1)));
+  const y0 = region === "top" ? 0 : h - bandH;
+  const k = clamp(opacity, 0, 1);
+
+  for (let y = y0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const rx = Math.min(rw - 1, Math.floor((x / w) * rw));
+      const ry = Math.min(rh - 1, Math.floor(((y - y0) / bandH) * rh));
+      const ri = (ry * rw + rx) * 4;
+      const i = (y * w + x) * 4;
+      d[i] = lerp(d[i], rd[ri], k);
+      d[i + 1] = lerp(d[i + 1], rd[ri + 1], k);
+      d[i + 2] = lerp(d[i + 2], rd[ri + 2], k);
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Named print presets
+// ---------------------------------------------------------------------------
+
+/** Frozen catalogue of press recipes. Each section maps to a processor above. */
+export const PRESETS = Object.freeze({
+  newsprint: Object.freeze({
+    label: "Newsprint",
+    misregister: { enabled: true, dx: 2, dy: -1, strength: 0.45, plate: "cyan" },
+    posterize: { enabled: true, levels: 4 },
+    halftone: {
+      enabled: true, angle: 45, pitch: 5, gamma: 0.9,
+      ink: [38, 36, 34], paper: [232, 226, 210], invert: false, antialias: true,
+    },
+    grain: { enabled: true, amount: 20, seed: 101, scale: 1, color: 0.6, shade: true },
+    ramp: { enabled: true, width: 256, height: 20, steps: 0, composite: { opacity: 0.22, region: "bottom", band: 0.12 } },
+  }),
+  risograph: Object.freeze({
+    label: "Risograph",
+    misregister: { enabled: true, dx: 4, dy: 2, strength: 0.7, plate: "magenta" },
+    posterize: { enabled: true, levels: 3 },
+    halftone: {
+      enabled: true, angle: 22, pitch: 7, gamma: 1.1,
+      ink: [214, 62, 74], paper: [246, 240, 224], invert: false, antialias: true,
+    },
+    grain: { enabled: true, amount: 14, seed: 202, scale: 2, color: 0.2, shade: true },
+    ramp: { enabled: true, width: 256, height: 20, steps: 3, composite: { opacity: 0.3, region: "bottom", band: 0.16 } },
+  }),
+  silkscreen: Object.freeze({
+    label: "Silkscreen",
+    misregister: { enabled: false, dx: 0, dy: 0, strength: 0, plate: "cyan" },
+    posterize: { enabled: true, levels: 2 },
+    halftone: {
+      enabled: true, angle: 67, pitch: 9, gamma: 1.3,
+      ink: [18, 18, 20], paper: [238, 232, 218], invert: false, antialias: false,
+    },
+    grain: { enabled: true, amount: 8, seed: 303, scale: 1, color: 0, shade: false },
+    ramp: { enabled: false, width: 256, height: 20, steps: 0, composite: { opacity: 0.2, region: "bottom", band: 0.14 } },
+  }),
+  comicBook: Object.freeze({
+    label: "Comic Book",
+    misregister: { enabled: true, dx: 3, dy: -2, strength: 0.55, plate: "yellow" },
+    posterize: { enabled: true, levels: 5 },
+    halftone: {
+      enabled: true, angle: 45, pitch: 4, gamma: 0.8,
+      ink: [26, 24, 30], paper: [250, 246, 232], invert: false, antialias: true,
+    },
+    grain: { enabled: true, amount: 10, seed: 404, scale: 1, color: 0.4, shade: true },
+    ramp: { enabled: true, width: 256, height: 18, steps: 0, composite: { opacity: 0.18, region: "top", band: 0.1 } },
+  }),
+  duotone: Object.freeze({
+    label: "Duotone",
+    misregister: { enabled: true, dx: 2, dy: 2, strength: 0.5, plate: "cyan" },
+    posterize: { enabled: true, levels: 6 },
+    halftone: {
+      enabled: true, angle: 15, pitch: 6, gamma: 1,
+      ink: [24, 46, 72], paper: [226, 214, 188], invert: false, antialias: true,
+    },
+    grain: { enabled: true, amount: 16, seed: 505, scale: 2, color: 0.7, shade: true },
+    ramp: { enabled: true, width: 256, height: 22, steps: 0, composite: { opacity: 0.28, region: "bottom", band: 0.2 } },
+  }),
 });
 
-/** Shallow-copy a preset so callers never mutate the frozen originals. */
-function clonePreset(preset) {
+// Mutable registry so studios can define their own recipes at runtime.
+const registry = new Map(Object.entries(PRESETS));
+
+/** List the names of all available presets. */
+export function listPresets() {
+  return Array.from(registry.keys());
+}
+
+/** Fetch a preset by name; falls back to newsprint when unknown. */
+export function getPreset(name) {
+  return registry.get(name) || PRESETS.newsprint;
+}
+
+/** Register (or replace) a named preset. Returns a copy of the stored config. */
+export function registerPreset(name, config) {
+  registry.set(String(name), config);
+  return registry.get(String(name));
+}
+
+/** Shallow section-wise merge of a base config with caller overrides. */
+function mergeConfig(base, overrides) {
   const out = {};
-  for (const key of Object.keys(preset)) {
-    const value = preset[key];
-    out[key] = value && typeof value === 'object' ? { ...value } : value;
+  for (const key of Object.keys(base)) {
+    const b = base[key];
+    const o = overrides[key];
+    if (b && typeof b === "object" && !Array.isArray(b)) {
+      out[key] = { ...b, ...(o && typeof o === "object" ? o : {}) };
+    } else {
+      out[key] = o !== undefined ? o : b;
+    }
+  }
+  for (const key of Object.keys(overrides)) {
+    if (!(key in out)) out[key] = overrides[key];
   }
   return out;
 }
 
-/**
- * Accept either a preset name, a config object with a `preset` name plus
- * per-stage overrides, or a raw config object. Always returns a fresh object.
- */
-export function resolvePreset(input) {
-  if (typeof input === 'string') {
-    const preset = PRINT_PRESETS[input];
-    if (!preset) throw new Error(`Unknown print preset: ${input}`);
-    return clonePreset(preset);
-  }
-  if (input && typeof input === 'object' && typeof input.preset === 'string') {
-    const base = resolvePreset(input.preset);
-    for (const key of Object.keys(input)) {
-      if (key === 'preset') continue;
-      const incoming = input[key];
-      if (base[key] && typeof base[key] === 'object' &&
-          incoming && typeof incoming === 'object' && !Array.isArray(incoming)) {
-        base[key] = { ...base[key], ...incoming };
-      } else {
-        base[key] = incoming;
-      }
-    }
-    return base;
-  }
-  return input && typeof input === 'object' ? { ...input } : null;
-}
-
-/* ==========================================================================
- * 8. Contrast ramp builder
- * ========================================================================== */
+// ---------------------------------------------------------------------------
+// Master processor
+// ---------------------------------------------------------------------------
 
 /**
- * Build a tonal ramp of `steps` swatches. A linear contrast/brightness curve
- * and a gamma exponent are applied around mid grey, then the result is mapped
- * from `dark` to `light`. Each entry exposes its normalized position, level,
- * RGB triplet and a CSS colour string.
+ * Apply a complete print finish to an ImageData buffer.
  *
- * @param {number} steps  number of swatches (2..1024)
- * @param {object} options { contrast, brightness, gamma, dark, light }
- * @returns {Array<object>} the ramp entries
+ * @param {ImageData} imageData   source buffer (never mutated)
+ * @param {string|object} preset  preset name or an inline config object
+ * @param {object} overrides      section-wise overrides (e.g. { halftone: { pitch: 3 } })
+ * @returns {ImageData} a new, fully processed buffer
  */
-export function buildContrastRamp(steps = 8, options = {}) {
-  const count = clamp(Math.floor(steps), 2, 1024);
-  const contrast = options.contrast ?? 1.2;
-  const brightness = options.brightness ?? 0;
-  const gamma = Math.max(0.05, options.gamma ?? 1);
-  const dark = options.dark ?? [12, 12, 16];
-  const light = options.light ?? [244, 240, 230];
-  const ramp = [];
+export function applyPrintFinish(imageData, preset = "newsprint", overrides = {}) {
+  const base = typeof preset === "string" ? getPreset(preset) : preset;
+  const cfg = mergeConfig(base, overrides || {});
 
-  for (let i = 0; i < count; i += 1) {
-    const t = i / (count - 1);
-    let s = (t - 0.5) * contrast + 0.5 + brightness;
-    s = clamp(s, 0, 1);
-    s = Math.pow(s, gamma);
-    const rgb = [
-      clampByte(lerp(dark[0], light[0], s)),
-      clampByte(lerp(dark[1], light[1], s)),
-      clampByte(lerp(dark[2], light[2], s))
-    ];
-    ramp.push({
-      index: i,
-      t,
-      level: clampByte(s * 255),
-      rgb,
-      css: `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`
-    });
+  let out = cloneImageData(imageData);
+
+  if (cfg.misregister && cfg.misregister.enabled) {
+    out = misregister(out, cfg.misregister);
   }
-  return ramp;
-}
-
-/** Render a ramp produced by buildContrastRamp into a swatch-strip ImageData. */
-export function rampToImageData(ramp, height = 24) {
-  const w = Math.max(1, ramp.length);
-  const h = Math.max(1, Math.floor(height));
-  const out = createImageData(w, h);
-  for (let y = 0; y < h; y += 1) {
-    for (let x = 0; x < w; x += 1) {
-      const rgb = ramp[x].rgb;
-      const o = (y * w + x) * 4;
-      out.data[o] = rgb[0];
-      out.data[o + 1] = rgb[1];
-      out.data[o + 2] = rgb[2];
-      out.data[o + 3] = 255;
-    }
+  if (cfg.posterize && cfg.posterize.enabled) {
+    out = posterize(out, cfg.posterize.levels, cfg.posterize);
+  }
+  if (cfg.halftone && cfg.halftone.enabled) {
+    out = halftone(out, cfg.halftone);
+  }
+  if (cfg.grain && cfg.grain.enabled) {
+    out = paperGrain(out, cfg.grain);
+  }
+  if (cfg.ramp && cfg.ramp.enabled) {
+    const rampOpts = { ...cfg.ramp };
+    const composite = rampOpts.composite || {};
+    delete rampOpts.composite;
+    const ramp = contrastRamp(rampOpts);
+    out = compositeRamp(out, ramp, composite);
   }
   return out;
 }
 
-/* ==========================================================================
- * 9. Apply the whole finishing chain
- * ========================================================================== */
+/** Library version tag, handy for build metadata. */
+export const VERSION = "1.0.0";
 
-/**
- * Run the enabled finishing stages over a copy of the input buffer, in the
- * order: posterize -> halftone -> misregister -> paper grain. Options may be
- * a preset name, a preset-plus-overrides object, or a raw per-stage config.
- * The source buffer is never modified.
- *
- * @param {object} imageData source pixels
- * @param {object|string} options finish configuration
- * @returns {object} a new, fully finished ImageData-shaped buffer
- */
-export function applyPrintFinish(imageData, options = {}) {
-  const cfg = resolvePreset(options) || {};
-  const posterizeCfg = cfg.posterize || { enabled: false };
-  const halftoneCfg = cfg.halftone || { enabled: false };
-  const misCfg = cfg.misregister || { enabled: false };
-  const grainCfg = cfg.grain || { enabled: false };
+/** Expose the full processor set as one namespace object. */
+export const processors = Object.freeze({
+  posterize,
+  halftone,
+  paperGrain,
+  misregister,
+  contrastRamp,
+  compositeRamp,
+  buildContrastCurve,
+  applyPrintFinish,
+});
 
-  let work = cloneImageData(imageData);
-  if (posterizeCfg.enabled) work = posterize(work, posterizeCfg);
-  if (halftoneCfg.enabled) work = halftone(work, halftoneCfg);
-  if (misCfg.enabled) work = misregister(work, misCfg);
-  if (grainCfg.enabled) work = paperGrain(work, grainCfg);
-  return work;
-}
+// Keep TAU referenced so bundlers do not flag it as dead when tree-shaking
+// helper constants; it belongs to the public numeric vocabulary of the module.
+export const FULL_TURN = TAU;

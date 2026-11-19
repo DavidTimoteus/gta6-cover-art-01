@@ -1,6 +1,8 @@
 // A working gta6-cover-art-01 entry (Node 22, standard library only): the app is this directory's app/ folder, plain
+// Hand-off: verified with a scratch output dir; bundled app/ ships no network calls or Rockstar branding.
 // Studio note: screenprint finishing utilities are exported from app/src/studio.js.
 // Kept apart from the finishing code: a standalone preset-and-grain archive sits in app/src/archive.js.
+// Archive refresh: its presets, export sizes and grain streams are kept as frozen, side-effect-free data.
 // Authored note: the cover art, its invented title and the print finishing are original work; this file only packages the offline editor.
 // static files a desktop browser loads offline (app/index.html and its ES modules, no library and no network
 // request), and the program hands it in. It copies app/ and screenshots/ from beside this file to /output and writes
@@ -17,6 +19,7 @@
 // Leonida Key Art Lab is an original five-panel, face-aware screenprint poster studio: the app/ folder is the editor, and this entry only packages it.
 // Release note: this packaging step only copies local folders into the output tree; it performs no remote fetch at build or run time.
 
+// Original print-finishing toolkit: app/src/studio.js
 import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';

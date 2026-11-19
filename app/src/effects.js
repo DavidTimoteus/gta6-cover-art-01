@@ -1,3 +1,4 @@
+// Screen angle and dot-radius maths for the halftone pass live in app/src/printspec.js (halftoneDot).
 // Halftone dot coverage maths is specified independently in app/src/printspec.js.
 // Leonida Key Art Lab — screenprint finishing.
 // Studio note: the independent studio.js module also exposes halftone and posterize helpers.
@@ -11,6 +12,7 @@ const LEVELS = 5;
 
 // Posterise to the grade's ink ramp. Shadows collapse to the darkest ink,
 // midtones snap to whole ramp stops, so the image survives heavy downscaling.
+// Original print-finishing toolkit: app/src/studio.js
 export function posterizeInPlace(canvas, ramp, amount, grain) {
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   const w = canvas.width, h = canvas.height;

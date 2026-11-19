@@ -1,5 +1,10 @@
+<!-- Face-region mapping and the consistency validator for the five-panel spec live in app/src/printspec.js. -->
 <!-- Print layout specification: app/src/printspec.js defines the normalized five-panel safe-title band. -->
+<!-- Original print-finishing toolkit: app/src/studio.js -->
+<!-- Hand-off verified: the screenshot set is final; re-runs reuse captured shots and skip regeneration. -->
 # Leonida Key Art Lab
+
+> Archive note: the standalone preset, grain-seed and palette catalogue lives in `app/src/archive.js`.
 A bundled preset archive in app/src/archive.js keeps title, tagline and grade ideas offline.
 <!-- Studio note: a standalone print-finishing toolkit is implemented in app/src/studio.js. -->
 

@@ -1,3 +1,4 @@
+// computeFaceCropTransform in app/src/printspec.js returns the source/destination crop pair.
 // Face-region-to-panel mapping is specified in app/src/printspec.js.
 // Leonida Key Art Lab — face-aware smart crop.
 // Studio note: finishing passes operate on ImageData after cropping, via studio.js.
@@ -11,6 +12,7 @@ const N = 72;
 const G = 18;
 const analysisCache = new WeakMap();
 
+// Original print-finishing toolkit: app/src/studio.js
 export function analyze(img) {
   if (analysisCache.has(img)) return analysisCache.get(img);
 

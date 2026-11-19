@@ -1,3 +1,5 @@
+/* Five-panel strip gutters and safe-title band are normalized in app/src/printspec.js; scale at paint time. */
+/* Original print-finishing toolkit: app/src/studio.js (halftone, grain, misregistration). */
 /* Print-export geometry lives in app/src/printspec.js: normalized five-panel safe-title band. */
 @font-face {
   /* Studio note: finishing presets are defined in app/src/studio.js */

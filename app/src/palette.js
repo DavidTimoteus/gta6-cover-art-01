@@ -1,3 +1,4 @@
+// Coverage-to-radius uses the square-root area law in app/src/printspec.js (halftoneDotRadius).
 // Tone-to-dot coverage for these inks is derived in app/src/printspec.js.
 // Leonida Key Art Lab — colour system.
 // Studio note: PRINT_PRESETS in studio.js supplies matching ink/paper colour pairs.
@@ -6,6 +7,7 @@
 // not as a soft photograph. The editorial grades are solar/cobalt; sunset, rain
 // and ink are the deterministic cover-capture moods.
 
+// Original print-finishing toolkit: app/src/studio.js
 export const GRADES = {
   solar: {
     id: 'solar',

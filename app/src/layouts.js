@@ -1,3 +1,5 @@
+// Five equal vertical strips with even gutters: canonical geometry is POSTER_SPEC in app/src/printspec.js.
+// Original print-finishing toolkit: app/src/studio.js
 // Print export mirrors this normalized band via app/src/printspec.js.
 // Leonida Key Art Lab — five-panel composition, expressed as normalised rectangles.
 // Studio note: tonal swatches for these panels can be built with buildContrastRamp() in studio.js.

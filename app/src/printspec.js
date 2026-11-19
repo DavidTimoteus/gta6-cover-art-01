@@ -1,525 +1,620 @@
 /**
  * printspec.js
  *
- * Original, dependency-free specification module for the offline
- * GTA-style poster editor. Every geometry value lives in NORMALIZED
- * coordinates: the unit square [0,1] x [0,1] where (0,0) is the
- * top-left corner of the poster and (1,1) is the bottom-right. Keeping
- * the layout unit-based makes it resolution independent, so the exact
- * same spec drives a small preview and a full print-sized canvas.
+ * Original five-panel poster print specification for the offline GTA-style
+ * poster editor. This module is intentionally self-contained: it has no imports
+ * and no side effects, so it can be used by the renderer, the cropper, or a
+ * Node-based export script without dragging in any runtime dependency.
  *
- * The poster is composed of five photo panels arranged in one
- * horizontal band, a reserved title zone above the band, and a footer
- * zone below it. Panels are separated by a uniform vertical gutter.
+ * COORDINATE CONTRACT
+ * -------------------
+ * Every rectangle in this file lives in NORMALIZED canvas coordinates:
+ *   (0, 0) = top-left of the poster, (1, 1) = bottom-right of the poster.
+ * `x` grows to the right, `y` grows downward, and `w`/`h` are extents (not
+ * second corner points). Keeping things normalized makes the spec resolution
+ * independent: multiply by the final pixel size only at export time.
  */
 
-/* ------------------------------------------------------------------ */
-/* Numeric helpers                                                     */
-/* ------------------------------------------------------------------ */
+// ---------------------------------------------------------------------------
+// Base constants
+// ---------------------------------------------------------------------------
 
-/** True only for a real, finite number (never NaN or +/-Infinity). */
-export function isFiniteNumber(value) {
-  return typeof value === "number" && Number.isFinite(value);
-}
+/** Lower bound of every normalized coordinate. */
+export const NORMALIZED_MIN = 0;
 
-/** Clamp a finite number into the inclusive range [min, max]. */
+/** Upper bound of every normalized coordinate. */
+export const NORMALIZED_MAX = 1;
+
+/** Number of strips in the classic five-panel "accordion" poster. */
+export const PANEL_COUNT = 5;
+
+/** Default space between neighbouring panels, in normalized canvas units. */
+export const DEFAULT_GUTTER = 0.012;
+
+/** Default print bleed outside the trim area, in normalized canvas units. */
+export const DEFAULT_BLEED = 0.02;
+
+/** Tolerance used by every floating-point geometry comparison. */
+export const GEOMETRY_EPSILON = 1e-6;
+
+/**
+ * Where a box gravitates inside its parent. Values are (fx, fy) multipliers:
+ * 0 = start edge, 0.5 = centred, 1 = end edge.
+ */
+export const ALIGN_FACTORS = Object.freeze({
+  'top-left': Object.freeze([0, 0]),
+  top: Object.freeze([0.5, 0]),
+  'top-right': Object.freeze([1, 0]),
+  left: Object.freeze([0, 0.5]),
+  center: Object.freeze([0.5, 0.5]),
+  right: Object.freeze([1, 0.5]),
+  'bottom-left': Object.freeze([0, 1]),
+  bottom: Object.freeze([0.5, 1]),
+  'bottom-right': Object.freeze([1, 1]),
+});
+
+// ---------------------------------------------------------------------------
+// The specification object
+// ---------------------------------------------------------------------------
+
+/**
+ * A concrete, immutable poster spec: a title band at the top and five equal
+ * vertical strips below it, separated by even gutters and wrapped in bleed.
+ *
+ * Layout arithmetic (for anyone auditing the numbers):
+ *   content width  = 0.96 - 0.04 = 0.92
+ *   four gutters   = 4 * 0.012   = 0.048
+ *   panel width    = (0.92 - 0.048) / 5 = 0.1744
+ *   panel top      = 0.16, panel height = 0.79  -> bottom edge 0.95
+ *   title zone     = y 0.02..0.12, safely above the topmost panel at 0.16
+ */
+export const POSTER_SPEC = Object.freeze({
+  id: 'five-panel-strip-v1',
+
+  canvas: Object.freeze({ w: 1, h: 1 }),
+
+  bleed: DEFAULT_BLEED,
+  gutter: DEFAULT_GUTTER,
+
+  margins: Object.freeze({
+    top: 0.02,
+    right: 0.04,
+    bottom: 0.05,
+    left: 0.04,
+  }),
+
+  titleZone: Object.freeze({ x: 0.04, y: 0.02, w: 0.92, h: 0.10 }),
+
+  panels: Object.freeze([
+    Object.freeze({ id: 'panel-1', x: 0.0400, y: 0.16, w: 0.1744, h: 0.79 }),
+    Object.freeze({ id: 'panel-2', x: 0.2264, y: 0.16, w: 0.1744, h: 0.79 }),
+    Object.freeze({ id: 'panel-3', x: 0.4128, y: 0.16, w: 0.1744, h: 0.79 }),
+    Object.freeze({ id: 'panel-4', x: 0.5992, y: 0.16, w: 0.1744, h: 0.79 }),
+    Object.freeze({ id: 'panel-5', x: 0.7856, y: 0.16, w: 0.1744, h: 0.79 }),
+  ]),
+
+  /** Defaults consumed by the face-mapping helpers. */
+  focus: Object.freeze({
+    defaultScale: 0.72,
+    defaultAlign: 'center',
+    defaultSourceAspect: 1,
+    defaultCropScale: 1.6,
+  }),
+
+  /** Defaults consumed by computeSafeTitlePlacement. */
+  title: Object.freeze({
+    lines: 2,
+    fontSize: 0.055,
+    lineHeight: 1.10,
+    maxWidthRatio: 0.90,
+    hAlign: 0.50,
+    vAlign: 0.50,
+  }),
+
+  /** Defaults consumed by the halftone helpers. */
+  halftone: Object.freeze({
+    cellSize: 6,
+    angleDeg: 45,
+    gamma: 0.9,
+  }),
+});
+
+// ---------------------------------------------------------------------------
+// Small geometry helpers
+// ---------------------------------------------------------------------------
+
+/** Clamp a finite number into [min, max]; non-finite input becomes `min`. */
 export function clamp(value, min, max) {
-  if (!isFiniteNumber(value)) return min;
-  return Math.min(max, Math.max(min, value));
+  if (!Number.isFinite(value)) return min;
+  if (value < min) return min;
+  if (value > max) return max;
+  return value;
 }
 
-/** Round a value to a fixed number of decimal digits. */
-export function round(value, digits = 6) {
-  const factor = 10 ** digits;
-  return Math.round(value * factor) / factor;
-}
-
-/** Linear interpolation between a and b for t in [0,1]. */
-export function lerp(a, b, t) {
-  const k = clamp(t, 0, 1);
-  return a + (b - a) * k;
-}
-
-/** Tolerance-based equality for normalized geometry. */
-export function nearlyEqual(a, b, eps = 1e-6) {
-  return Math.abs(a - b) <= eps;
-}
-
-/* ------------------------------------------------------------------ */
-/* Rectangle helpers                                                   */
-/* ------------------------------------------------------------------ */
-
-/** Build a named rectangle in normalized coordinates. */
-export function makeRect(id, x, y, width, height) {
-  return { id, x, y, width, height };
-}
-
-/** Right edge coordinate of a rectangle. */
-export function rectRight(rect) {
-  return rect.x + rect.width;
-}
-
-/** Bottom edge coordinate of a rectangle. */
-export function rectBottom(rect) {
-  return rect.y + rect.height;
-}
-
-/** Center point of a rectangle. */
-export function rectCenter(rect) {
-  return {
-    x: rect.x + rect.width / 2,
-    y: rect.y + rect.height / 2,
-  };
-}
-
-/** Return a rectangle with positive width/height regardless of corner order. */
-export function normalizeRect(rect) {
-  const x = Math.min(rect.x, rect.x + rect.width);
-  const y = Math.min(rect.y, rect.y + rect.height);
-  return {
-    ...rect,
-    x,
-    y,
-    width: Math.abs(rect.width),
-    height: Math.abs(rect.height),
-  };
-}
-
-/** Shrink or grow a rectangle by given amounts on each axis. */
-export function insetRect(rect, dx, dy = dx) {
-  return {
-    ...rect,
-    x: rect.x + dx,
-    y: rect.y + dy,
-    width: rect.width - 2 * dx,
-    height: rect.height - 2 * dy,
-  };
-}
-
-/** Strict overlap test; rectangles that merely touch do not overlap. */
-export function rectsOverlap(a, b) {
-  const aRight = rectRight(a);
-  const bRight = rectRight(b);
-  const aBottom = rectBottom(a);
-  const bBottom = rectBottom(b);
-  if (aRight <= b.x || bRight <= a.x) return false;
-  if (aBottom <= b.y || bBottom <= a.y) return false;
-  return true;
-}
-
-/** Whether a point lies inside a rectangle (edges are inclusive). */
-export function rectContainsPoint(rect, px, py) {
-  return px >= rect.x && px <= rectRight(rect) && py >= rect.y && py <= rectBottom(rect);
+/** True when `rect` has finite, in-range coordinates and a positive extent. */
+export function isNormalizedRect(rect) {
+  if (!rect || typeof rect !== 'object') return false;
+  const { x, y, w, h } = rect;
+  if (![x, y, w, h].every(Number.isFinite)) return false;
+  if (w <= 0 || h <= 0) return false;
+  return (
+    x >= NORMALIZED_MIN - GEOMETRY_EPSILON &&
+    y >= NORMALIZED_MIN - GEOMETRY_EPSILON &&
+    x + w <= NORMALIZED_MAX + GEOMETRY_EPSILON &&
+    y + h <= NORMALIZED_MAX + GEOMETRY_EPSILON
+  );
 }
 
 /** Area of a rectangle in normalized square units. */
 export function rectArea(rect) {
-  return rect.width * rect.height;
+  if (!rect) return 0;
+  return Math.max(0, rect.w) * Math.max(0, rect.h);
 }
 
-/** Width-to-height ratio of a rectangle. */
-export function aspectOf(rect) {
-  return rect.height === 0 ? Infinity : rect.width / rect.height;
-}
-
-/* ------------------------------------------------------------------ */
-/* Canonical layout constants                                          */
-/* ------------------------------------------------------------------ */
-
-/** The full poster canvas. */
-export const CANVAS = Object.freeze({
-  left: 0,
-  top: 0,
-  right: 1,
-  bottom: 1,
-  width: 1,
-  height: 1,
-});
-
-/** Outer safety margins, as fractions of canvas width / height. */
-export const MARGIN = Object.freeze({
-  left: 0.05,
-  right: 0.05,
-  top: 0.04,
-  bottom: 0.045,
-});
-
-/** Number of photo panels in the band. */
-export const PANEL_COUNT = 5;
-
-/** Uniform space between neighbouring panels. */
-export const GUTTER = 0.012;
-
-/** Zone reserved for the poster title, above the photo band. */
-export const TITLE_ZONE = Object.freeze(
-  makeRect("title-zone", MARGIN.left, MARGIN.top, 1 - MARGIN.left - MARGIN.right, 0.18),
-);
-
-/** Vertical extent of the photo band. */
-export const PANEL_BAND = Object.freeze({
-  top: 0.235,
-  bottom: 0.855,
-});
-
-/** Zone reserved for credits / logo, below the photo band. */
-export const FOOTER_ZONE = Object.freeze(
-  makeRect(
-    "footer-zone",
-    MARGIN.left,
-    PANEL_BAND.bottom,
-    1 - MARGIN.left - MARGIN.right,
-    1 - PANEL_BAND.bottom - MARGIN.bottom,
-  ),
-);
-
-/** Lay out PANEL_COUNT equal panels across the available width. */
-function buildPanels() {
-  const usableWidth = 1 - MARGIN.left - MARGIN.right - GUTTER * (PANEL_COUNT - 1);
-  const panelWidth = usableWidth / PANEL_COUNT;
-  const bandHeight = PANEL_BAND.bottom - PANEL_BAND.top;
-  const panels = [];
-  for (let index = 0; index < PANEL_COUNT; index += 1) {
-    const x = MARGIN.left + index * (panelWidth + GUTTER);
-    panels.push(
-      Object.freeze(
-        makeRect(`panel-${index + 1}`, round(x, 6), round(PANEL_BAND.top, 6), round(panelWidth, 6), round(bandHeight, 6)),
-      ),
-    );
-  }
-  return Object.freeze(panels);
-}
-
-/** The complete, immutable five-panel poster specification. */
-export const FIVE_PANEL_SPEC = Object.freeze({
-  id: "five-panel-poster",
-  version: 1,
-  canvas: CANVAS,
-  margin: MARGIN,
-  gutter: GUTTER,
-  panelCount: PANEL_COUNT,
-  panelBand: PANEL_BAND,
-  titleZone: TITLE_ZONE,
-  footerZone: FOOTER_ZONE,
-  panels: buildPanels(),
-});
-
-/* ------------------------------------------------------------------ */
-/* Face-to-panel mapping                                               */
-/* ------------------------------------------------------------------ */
-
-/** Center point of a face region given in photo-normalized coordinates. */
-export function faceCenter(faceRegion) {
-  const face = normalizeRect(faceRegion);
+/** Centre point of a rectangle, returned as { x, y }. */
+export function rectCenter(rect) {
   return {
-    x: face.x + face.width / 2,
-    y: face.y + face.height / 2,
+    x: rect.x + rect.w / 2,
+    y: rect.y + rect.h / 2,
   };
 }
 
-/**
- * Coerce a loose face box into a clean normalized rectangle, applying
- * optional fractional padding around the detected bounding box.
- */
-export function normalizeFaceRegion(faceRegion, padding = 0) {
-  const raw = normalizeRect({
-    x: faceRegion.x,
-    y: faceRegion.y,
-    width: faceRegion.width,
-    height: faceRegion.height,
-  });
-  const growX = raw.width * padding;
-  const growY = raw.height * padding;
-  return makeRect(
-    faceRegion.id || "face",
-    round(raw.x - growX, 6),
-    round(raw.y - growY, 6),
-    round(raw.width + 2 * growX, 6),
-    round(raw.height + 2 * growY, 6),
+/** Strict rectangle intersection (edge-touching is NOT an overlap). */
+export function rectsOverlap(a, b, eps = GEOMETRY_EPSILON) {
+  if (!a || !b) return false;
+  return (
+    a.x < b.x + b.w - eps &&
+    b.x < a.x + a.w - eps &&
+    a.y < b.y + b.h - eps &&
+    b.y < a.y + a.h - eps
   );
 }
 
+/** True when `inner` sits completely inside `outer` (epsilon tolerant). */
+export function rectWithin(inner, outer, eps = GEOMETRY_EPSILON) {
+  if (!inner || !outer) return false;
+  return (
+    inner.x >= outer.x - eps &&
+    inner.y >= outer.y - eps &&
+    inner.x + inner.w <= outer.x + outer.w + eps &&
+    inner.y + inner.h <= outer.y + outer.h + eps
+  );
+}
+
+/** Clamp a rectangle into the normalized unit square and drop negative size. */
+export function normalizeRect(rect) {
+  const x = clamp(rect && rect.x, NORMALIZED_MIN, NORMALIZED_MAX);
+  const y = clamp(rect && rect.y, NORMALIZED_MIN, NORMALIZED_MAX);
+  const w = Math.max(0, clamp(rect && rect.w, 0, NORMALIZED_MAX - x));
+  const h = Math.max(0, clamp(rect && rect.h, 0, NORMALIZED_MAX - y));
+  return { x, y, w, h };
+}
+
+/** Fetch a panel rectangle by index, or null when the index is out of range. */
+export function panelRectForIndex(spec, index) {
+  const panels = spec && spec.panels;
+  if (!Array.isArray(panels)) return null;
+  const i = Math.trunc(index);
+  if (!Number.isFinite(i) || i < 0 || i >= panels.length) return null;
+  return panels[i] || null;
+}
+
+// ---------------------------------------------------------------------------
+// Face -> panel mapping
+// ---------------------------------------------------------------------------
+
 /**
- * Map a photo's face region into a panel rectangle.
+ * Resolve an alignment keyword into (fx, fy) multipliers.
+ * Unknown keywords quietly fall back to centre alignment.
+ */
+function alignmentFactors(align) {
+  return ALIGN_FACTORS[align] || ALIGN_FACTORS.center;
+}
+
+/**
+ * Map a detected face rectangle (given in normalized IMAGE coordinates) into
+ * the space of a POSTER panel (normalized CANVAS coordinates).
  *
- * The face box is expressed in PHOTO space (0..1 over the source
- * image) while the panel is in POSTER space. The returned `photoCrop`
- * is the region of the source image to cut out; its aspect ratio is
- * forced to match the panel so the crop can be stretched into the
- * panel without distortion. The face center is placed at the requested
- * anchor position inside the crop and the crop is clamped to the photo.
+ * The returned rectangle is the area INSIDE the panel that the face should
+ * occupy. It preserves the face's pixel aspect ratio, scales to `focusScale`
+ * of the panel, and is positioned according to `align`.
+ *
+ * @param {{x:number,y:number,w:number,h:number}} face normalized image rect
+ * @param {{x:number,y:number,w:number,h:number}} panel normalized canvas rect
+ * @param {object} [options]
+ * @param {number} [options.focusScale] fraction of the panel to cover (0..1]
+ * @param {string} [options.align] one of the ALIGN_FACTORS keys
+ * @param {number} [options.sourceAspect] image width / image height
+ * @param {number} [options.pad] extra inset from the panel edges (0..0.5)
+ * @returns {{x:number,y:number,w:number,h:number}}
  */
-export function mapFaceToPanel(faceRegion, panelRect, options = {}) {
-  const padding = options.padding ?? 0.35;
-  const anchorX = clamp(options.anchorX ?? 0.5, 0, 1);
-  const anchorY = clamp(options.anchorY ?? 0.5, 0, 1);
-  const face = normalizeFaceRegion(faceRegion, padding);
-  const panelAspect = aspectOf(panelRect);
-  const faceAspect = aspectOf(face);
+export function faceToPanelRect(face, panel, options = {}) {
+  const focus = (POSTER_SPEC && POSTER_SPEC.focus) || {};
+  const focusScale = clamp(
+    Number.isFinite(options.focusScale) ? options.focusScale : focus.defaultScale,
+    0.05,
+    1,
+  );
+  const align = options.align || focus.defaultAlign || 'center';
+  const sourceAspect = clamp(
+    Number.isFinite(options.sourceAspect)
+      ? options.sourceAspect
+      : focus.defaultSourceAspect,
+    0.05,
+    20,
+  );
+  const pad = clamp(options.pad || 0, 0, 0.5);
 
-  let cropW = face.width;
-  let cropH = face.height;
-  if (cropW / cropH < panelAspect) {
-    cropW = cropH * panelAspect;
+  // Work in a padded copy of the panel so artwork never kisses the gutter.
+  const innerW = panel.w * (1 - 2 * pad);
+  const innerH = panel.h * (1 - 2 * pad);
+  const innerX = panel.x + panel.w * pad;
+  const innerY = panel.y + panel.h * pad;
+
+  // Face aspect in PIXEL space (normalized rects need the image aspect back).
+  const faceW = Math.max(face.w, GEOMETRY_EPSILON) * sourceAspect;
+  const faceH = Math.max(face.h, GEOMETRY_EPSILON);
+  const faceAspect = faceW / faceH;
+
+  // Fit the face box inside a focusScale-sized box of the panel.
+  let boxW = innerW * focusScale;
+  let boxH = innerH * focusScale;
+  if (boxW / boxH > faceAspect) {
+    boxW = boxH * faceAspect;
   } else {
-    cropH = cropW / panelAspect;
+    boxH = boxW / faceAspect;
   }
 
-  const center = faceCenter(face);
-  let cropX = center.x - cropW * anchorX;
-  let cropY = center.y - cropH * anchorY;
+  const [fx, fy] = alignmentFactors(align);
+  const x = innerX + (innerW - boxW) * fx;
+  const y = innerY + (innerH - boxH) * fy;
 
-  if (cropW >= 1) {
-    cropW = 1;
-    cropX = 0;
+  return { x, y, w: boxW, h: boxH };
+}
+
+/**
+ * Build a full crop transform for a photo: which part of the SOURCE image to
+ * sample (normalized image rect) and where to paint it in the DESTINATION
+ * panel (normalized canvas rect). The source crop is centred on the face and
+ * expanded until its pixel aspect matches the destination box.
+ *
+ * @returns {{source:object, destination:object, faceCenter:object}}
+ */
+export function computeFaceCropTransform(face, panel, options = {}) {
+  const destination = faceToPanelRect(face, panel, options);
+
+  const focus = (POSTER_SPEC && POSTER_SPEC.focus) || {};
+  const sourceAspect = clamp(
+    Number.isFinite(options.sourceAspect)
+      ? options.sourceAspect
+      : focus.defaultSourceAspect,
+    0.05,
+    20,
+  );
+  const cropScale = clamp(
+    Number.isFinite(options.cropScale) ? options.cropScale : focus.defaultCropScale,
+    1,
+    5,
+  );
+
+  const faceCx = face.x + face.w / 2;
+  const faceCy = face.y + face.h / 2;
+
+  let cropW = Math.max(face.w, GEOMETRY_EPSILON) * cropScale;
+  let cropH = Math.max(face.h, GEOMETRY_EPSILON) * cropScale;
+  const destAspect = destination.w / Math.max(destination.h, GEOMETRY_EPSILON);
+  const cropPixelAspect = (cropW * sourceAspect) / cropH;
+
+  if (cropPixelAspect > destAspect) {
+    cropW = (cropH * destAspect) / sourceAspect;
   } else {
-    cropX = clamp(cropX, 0, 1 - cropW);
+    cropH = (cropW * sourceAspect) / destAspect;
   }
-  if (cropH >= 1) {
-    cropH = 1;
-    cropY = 0;
-  } else {
-    cropY = clamp(cropY, 0, 1 - cropH);
-  }
+
+  // Keep the crop inside the image by sliding (not shrinking) it.
+  let sx = faceCx - cropW / 2;
+  let sy = faceCy - cropH / 2;
+  if (sx < 0) sx = 0;
+  if (sy < 0) sy = 0;
+  if (sx + cropW > 1) sx = 1 - cropW;
+  if (sy + cropH > 1) sy = 1 - cropH;
 
   return {
-    panel: panelRect,
-    photoCrop: makeRect("photo-crop", round(cropX, 6), round(cropY, 6), round(cropW, 6), round(cropH, 6)),
-    faceCenter: center,
-    faceAspect: round(faceAspect, 6),
-    panelAspect: round(panelAspect, 6),
-    anchor: { x: anchorX, y: anchorY },
+    source: { x: sx, y: sy, w: cropW, h: cropH },
+    destination,
+    faceCenter: { x: faceCx, y: faceCy },
   };
 }
 
-/** Map an ordered list of face regions onto the ordered panel list. */
-export function mapFacesToPanels(faceRegions, spec, options = {}) {
-  const panels = spec.panels || [];
-  return panels.map((panel, index) => {
-    const face = faceRegions[index] || null;
-    if (!face) return { panel, photoCrop: null, faceCenter: null, skipped: true };
-    return { ...mapFaceToPanel(face, panel, options), skipped: false };
+// ---------------------------------------------------------------------------
+// Safe title placement
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute a title box that is guaranteed to sit in the band above the panels.
+ * The available band is the spec's titleZone clipped to the canvas AND to the
+ * area strictly above the topmost panel. If the requested type does not fit,
+ * the font size is reduced (and `fitted` is false) rather than overflowing.
+ *
+ * @param {object} spec a poster spec (see POSTER_SPEC)
+ * @param {object} [title] { lines, fontSize, lineHeight, maxWidthRatio,
+ *                           hAlign, vAlign }
+ * @returns {null|{x:number,y:number,w:number,h:number,fontSize:number,
+ *                 lines:number,fitted:boolean,zone:object}}
+ */
+export function computeSafeTitlePlacement(spec, title = {}) {
+  const zone = spec && spec.titleZone;
+  const panels = spec && spec.panels;
+  const canvasW = (spec && spec.canvas && spec.canvas.w) || 1;
+  const canvasH = (spec && spec.canvas && spec.canvas.h) || 1;
+
+  if (!zone || !Array.isArray(panels) || panels.length === 0) return null;
+
+  const topmostY = Math.min.apply(
+    null,
+    panels.map((p) => p.y),
+  );
+
+  const x0 = Math.max(zone.x, NORMALIZED_MIN);
+  const y0 = Math.max(zone.y, NORMALIZED_MIN);
+  const x1 = Math.min(zone.x + zone.w, canvasW);
+  const y1 = Math.min(zone.y + zone.h, topmostY);
+
+  const availW = x1 - x0;
+  const availH = y1 - y0;
+  if (availW <= GEOMETRY_EPSILON || availH <= GEOMETRY_EPSILON) return null;
+
+  const defaults = (spec && spec.title) || {};
+  const linesRaw = Number(title.lines);
+  const lines =
+    Number.isFinite(linesRaw) && linesRaw >= 1 ? Math.trunc(linesRaw) : defaults.lines || 1;
+  const requestedSize = clamp(
+    Number.isFinite(title.fontSize) ? title.fontSize : defaults.fontSize || 0.05,
+    GEOMETRY_EPSILON,
+    1,
+  );
+  const lineHeight = clamp(
+    Number.isFinite(title.lineHeight) ? title.lineHeight : defaults.lineHeight || 1.1,
+    1,
+    3,
+  );
+  const maxWidthRatio = clamp(
+    Number.isFinite(title.maxWidthRatio)
+      ? title.maxWidthRatio
+      : defaults.maxWidthRatio || 1,
+    0.05,
+    1,
+  );
+  const hAlign = clamp(
+    Number.isFinite(title.hAlign) ? title.hAlign : defaults.hAlign ?? 0.5,
+    0,
+    1,
+  );
+  const vAlign = clamp(
+    Number.isFinite(title.vAlign) ? title.vAlign : defaults.vAlign ?? 0.5,
+    0,
+    1,
+  );
+
+  const naturalH = lines * requestedSize * lineHeight;
+  const fitted = naturalH <= availH + GEOMETRY_EPSILON;
+  const fontSize = fitted ? requestedSize : availH / (lines * lineHeight);
+  const boxH = lines * fontSize * lineHeight;
+  const boxW = availW * maxWidthRatio;
+
+  return {
+    x: x0 + (availW - boxW) * hAlign,
+    y: y0 + (availH - boxH) * vAlign,
+    w: boxW,
+    h: boxH,
+    fontSize,
+    lines,
+    fitted,
+    zone: { x: x0, y: y0, w: availW, h: availH },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Halftone screen
+// ---------------------------------------------------------------------------
+
+/**
+ * Radius of a single halftone dot. Dot AREA (not radius) is proportional to
+ * ink coverage, hence the square root. A gamma exponent lets the caller tune
+ * the perceptual response of the paper/ink pair.
+ */
+export function halftoneDotRadius(coverage, cellSize = 6, gamma = 1) {
+  const c = Math.pow(clamp(coverage, 0, 1), Math.max(0.1, gamma));
+  return (Math.max(0, cellSize) / 2) * Math.sqrt(c);
+}
+
+/**
+ * Evaluate a rotated halftone screen at one sample point.
+ *
+ * The screen is a grid of `cellSize`-spaced dots rotated by `angleDeg`. For the
+ * sample (x, y) we rotate into screen space, find the nearest cell centre, and
+ * report whether the point falls inside that cell's coverage dot.
+ *
+ * @returns {{coverage:number,radius:number,distance:number,inside:boolean,
+ *            cellX:number,cellY:number}}
+ */
+export function halftoneDot(coverage, x = 0, y = 0, options = {}) {
+  const cellSize = Math.max(1, options.cellSize || POSTER_SPEC.halftone.cellSize);
+  const angleDeg = Number.isFinite(options.angleDeg)
+    ? options.angleDeg
+    : POSTER_SPEC.halftone.angleDeg;
+  const gamma = Number.isFinite(options.gamma)
+    ? options.gamma
+    : POSTER_SPEC.halftone.gamma;
+  const phaseX = options.phaseX || 0;
+  const phaseY = options.phaseY || 0;
+
+  const c = clamp(coverage, 0, 1);
+  const radians = (angleDeg * Math.PI) / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+
+  // Rotate the sample into the screen's coordinate frame.
+  const rx = x * cos + y * sin;
+  const ry = -x * sin + y * cos;
+  const gx = rx + phaseX;
+  const gy = ry + phaseY;
+
+  const cellX = Math.floor(gx / cellSize);
+  const cellY = Math.floor(gy / cellSize);
+  const dx = gx - (cellX + 0.5) * cellSize;
+  const dy = gy - (cellY + 0.5) * cellSize;
+  const distance = Math.hypot(dx, dy);
+  const radius = halftoneDotRadius(c, cellSize, gamma);
+
+  return {
+    coverage: c,
+    radius,
+    distance,
+    inside: distance <= radius,
+    cellX,
+    cellY,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Export / introspection helpers
+// ---------------------------------------------------------------------------
+
+/** Convert a spec's normalized rectangles into CSS percentage strings. */
+export function posterSpecToCss(spec) {
+  const pct = (v) => `${(v * 100).toFixed(4)}%`;
+  const box = (r) => ({
+    left: pct(r.x),
+    top: pct(r.y),
+    width: pct(r.w),
+    height: pct(r.h),
   });
-}
-
-/* ------------------------------------------------------------------ */
-/* Safe title placement                                                */
-/* ------------------------------------------------------------------ */
-
-/**
- * Compute a safe rectangle for the poster title: the intersection of
- * the title zone with the empty strip directly above the panels. The
- * result also carries typographic limits derived from the available
- * height so a title can never collide with the first photo row.
- */
-export function computeSafeTitlePlacement(spec) {
-  const zone = spec.titleZone;
-  const panels = spec.panels || [];
-  const topOfPanels = panels.reduce((min, panel) => Math.min(min, panel.y), Infinity);
-  const zoneBottom = rectBottom(zone);
-  const safeBottom = Number.isFinite(topOfPanels) ? Math.min(zoneBottom, topOfPanels) : zoneBottom;
-  const gutter = spec.gutter || 0;
-  const usableBottom = safeBottom - gutter;
-  const usableHeight = Math.max(0, usableBottom - zone.y);
-  const inset = Math.min(spec.margin?.left || 0, zone.width * 0.05);
-
   return {
-    id: "title-safe",
-    x: round(zone.x + inset, 6),
-    y: round(zone.y, 6),
-    width: round(zone.width - 2 * inset, 6),
-    height: round(usableHeight, 6),
-    centerX: round(zone.x + zone.width / 2, 6),
-    baseline: round(zone.y + usableHeight * 0.82, 6),
-    maxFontSize: round(usableHeight * 0.7, 6),
-    clearanceToPanels: round(Math.max(0, topOfPanels - usableBottom), 6),
+    id: spec && spec.id,
+    panels: ((spec && spec.panels) || []).map((p) => ({
+      id: p.id,
+      ...box(p),
+    })),
+    titleZone: spec && spec.titleZone ? box(spec.titleZone) : null,
   };
 }
 
-/* ------------------------------------------------------------------ */
-/* Halftone dots                                                       */
-/* ------------------------------------------------------------------ */
+// ---------------------------------------------------------------------------
+// Validation
+// ---------------------------------------------------------------------------
 
 /**
- * Describe a single halftone dot for a given luminance tone. Dot AREA
- * scales linearly with tone, so radius scales with its square root.
- * Returns geometry that a renderer can stamp onto a rotated grid.
+ * Check that a poster spec is internally consistent.
+ *
+ * Verifies: canvas sanity, exactly PANEL_COUNT panels, valid/positive panel
+ * rects, panels inside the bleed-safe area, no panel overlaps, a monotonically
+ * increasing left-to-right strip order, an even minimum gutter, and a title
+ * zone that is valid and strictly above every panel.
+ *
+ * @returns {{ok:boolean,errors:string[]}}
  */
-export function halftoneDot(tone, options = {}) {
-  const angle = options.angle ?? 0;
-  const frequency = Math.max(1, options.frequency ?? 48);
-  const t = clamp(tone, 0, 1);
-  const spacing = 1 / frequency;
-  const maxRadius = spacing / 2;
-  const radius = maxRadius * Math.sqrt(t);
-  const coverage = Math.PI * radius * radius * frequency * frequency;
-  return {
-    tone: t,
-    angle,
-    frequency,
-    spacing: round(spacing, 6),
-    radius: round(radius, 6),
-    coverage: round(clamp(coverage, 0, 1), 6),
-    active: radius > 0,
-  };
-}
-
-/** Rotate a grid coordinate around the origin by an angle in radians. */
-export function halftoneCellCenter(gridX, gridY, frequency, angle = 0) {
-  const spacing = 1 / Math.max(1, frequency);
-  const x = gridX * spacing;
-  const y = gridY * spacing;
-  const cos = Math.cos(angle);
-  const sin = Math.sin(angle);
-  return {
-    x: round(x * cos - y * sin, 6),
-    y: round(x * sin + y * cos, 6),
-  };
-}
-
-/** Build a bounded halftone grid description for a rectangular region. */
-export function halftoneGrid(region, options = {}) {
-  const frequency = Math.max(1, options.frequency ?? 48);
-  const angle = options.angle ?? Math.PI / 4;
-  const cols = Math.max(1, Math.round(region.width * frequency));
-  const rows = Math.max(1, Math.round(region.height * frequency));
-  const cells = [];
-  for (let row = 0; row < rows; row += 1) {
-    for (let col = 0; col < cols; col += 1) {
-      cells.push({ col, row, center: halftoneCellCenter(col + 0.5, row + 0.5, frequency, angle) });
-    }
-  }
-  return { region, frequency, angle, cols, rows, cells };
-}
-
-/* ------------------------------------------------------------------ */
-/* Coordinate conversion                                               */
-/* ------------------------------------------------------------------ */
-
-/** Convert a normalized rectangle to pixel coordinates. */
-export function normalizedRectToPixels(rect, pixelWidth, pixelHeight) {
-  return makeRect(
-    rect.id,
-    round(rect.x * pixelWidth, 3),
-    round(rect.y * pixelHeight, 3),
-    round(rect.width * pixelWidth, 3),
-    round(rect.height * pixelHeight, 3),
-  );
-}
-
-/** Convert a pixel rectangle back to normalized coordinates. */
-export function pixelsToNormalizedRect(rect, pixelWidth, pixelHeight) {
-  return makeRect(
-    rect.id,
-    round(rect.x / pixelWidth, 6),
-    round(rect.y / pixelHeight, 6),
-    round(rect.width / pixelWidth, 6),
-    round(rect.height / pixelHeight, 6),
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/* Lookup helpers                                                      */
-/* ------------------------------------------------------------------ */
-
-/** Find a panel by its id, or null when absent. */
-export function panelById(spec, id) {
-  return (spec.panels || []).find((panel) => panel.id === id) || null;
-}
-
-/** Return the panel containing a normalized point, or null. */
-export function panelAtPoint(spec, px, py) {
-  return (spec.panels || []).find((panel) => rectContainsPoint(panel, px, py)) || null;
-}
-
-/* ------------------------------------------------------------------ */
-/* Validation                                                          */
-/* ------------------------------------------------------------------ */
-
-/**
- * Check a poster spec for internal consistency. Structural problems
- * (missing fields, out-of-range geometry, overlapping panels, a title
- * that is not above the band, etc.) are collected as error strings.
- */
-export function validateSpec(spec) {
+export function validatePosterSpec(spec) {
   const errors = [];
-  if (!spec || typeof spec !== "object") {
-    return { ok: false, errors: ["spec must be an object"] };
+
+  if (!spec || typeof spec !== 'object' || Array.isArray(spec)) {
+    return { ok: false, errors: ['spec must be a plain object'] };
   }
 
+  // -- canvas ---------------------------------------------------------------
   const canvas = spec.canvas;
-  if (!canvas || !isFiniteNumber(canvas.width) || !isFiniteNumber(canvas.height) || canvas.width <= 0 || canvas.height <= 0) {
-    errors.push("canvas must have positive finite width and height");
+  if (
+    !canvas ||
+    !Number.isFinite(canvas.w) ||
+    !Number.isFinite(canvas.h) ||
+    canvas.w <= 0 ||
+    canvas.h <= 0
+  ) {
+    errors.push('canvas must declare positive finite w and h');
   }
 
-  const margin = spec.margin;
-  if (!margin) {
-    errors.push("margin is required");
-  } else {
-    for (const edge of ["left", "right", "top", "bottom"]) {
-      if (!isFiniteNumber(margin[edge]) || margin[edge] < 0) errors.push(`margin.${edge} must be non-negative`);
-    }
-    if (isFiniteNumber(margin.left) && isFiniteNumber(margin.right) && margin.left + margin.right >= 1) {
-      errors.push("left and right margins leave no usable width");
-    }
-  }
+  // -- numeric global fields ------------------------------------------------
+  const bleed = Number.isFinite(spec.bleed) ? spec.bleed : DEFAULT_BLEED;
+  const gutter = Number.isFinite(spec.gutter) ? spec.gutter : DEFAULT_GUTTER;
+  if (bleed < 0 || bleed > 0.25) errors.push('bleed must be within 0..0.25');
+  if (gutter < 0 || gutter > 0.1) errors.push('gutter must be within 0..0.1');
 
-  if (!isFiniteNumber(spec.gutter) || spec.gutter < 0) {
-    errors.push("gutter must be a non-negative number");
-  }
-
-  const panels = spec.panels;
-  if (!Array.isArray(panels)) {
-    errors.push("panels must be an array");
-  } else {
-    if (panels.length !== PANEL_COUNT) errors.push(`expected ${PANEL_COUNT} panels, found ${panels.length}`);
-    let expectedY = null;
-    let expectedHeight = null;
-    panels.forEach((panel, index) => {
-      if (!isFiniteNumber(panel.x) || !isFiniteNumber(panel.y) || !isFiniteNumber(panel.width) || !isFiniteNumber(panel.height)) {
-        errors.push(`panel ${index} has non-finite geometry`);
-        return;
-      }
-      if (panel.width <= 0 || panel.height <= 0) errors.push(`panel ${index} has non-positive size`);
-      if (panel.x < 0 || panel.y < 0 || rectRight(panel) > 1 || rectBottom(panel) > 1) {
-        errors.push(`panel ${index} escapes the unit canvas`);
-      }
-      if (expectedY === null) {
-        expectedY = panel.y;
-        expectedHeight = panel.height;
-      } else if (!nearlyEqual(panel.y, expectedY) || !nearlyEqual(panel.height, expectedHeight)) {
-        errors.push(`panel ${index} is misaligned with the band`);
-      }
-      for (let other = 0; other < index; other += 1) {
-        if (rectsOverlap(panel, panels[other])) errors.push(`panel ${index} overlaps panel ${other}`);
+  const margins = spec.margins;
+  if (margins) {
+    ['top', 'right', 'bottom', 'left'].forEach((side) => {
+      const value = margins[side];
+      if (!Number.isFinite(value) || value < 0 || value > 0.5) {
+        errors.push(`margins.${side} must be within 0..0.5`);
       }
     });
+  } else {
+    errors.push('margins object is missing');
   }
 
-  const title = spec.titleZone;
-  if (!title) {
-    errors.push("titleZone is required");
-  } else if (rectBottom(title) > Math.min.apply(null, (panels || []).map((p) => p.y).concat([Infinity]))) {
-    errors.push("titleZone must sit above every panel");
+  // -- panels ---------------------------------------------------------------
+  const panels = spec.panels;
+  if (!Array.isArray(panels)) {
+    errors.push('panels must be an array');
+  } else {
+    if (panels.length !== PANEL_COUNT) {
+      errors.push(`expected ${PANEL_COUNT} panels, found ${panels.length}`);
+    }
+
+    panels.forEach((panel, i) => {
+      if (!isNormalizedRect(panel)) {
+        errors.push(`panel ${i} is not a valid normalized rect`);
+        return;
+      }
+      if (
+        panel.x < bleed - GEOMETRY_EPSILON ||
+        panel.y < bleed - GEOMETRY_EPSILON ||
+        panel.x + panel.w > 1 - bleed + GEOMETRY_EPSILON ||
+        panel.y + panel.h > 1 - bleed + GEOMETRY_EPSILON
+      ) {
+        errors.push(`panel ${i} crosses the bleed-safe area`);
+      }
+    });
+
+    for (let i = 0; i < panels.length; i += 1) {
+      for (let j = i + 1; j < panels.length; j += 1) {
+        if (rectsOverlap(panels[i], panels[j])) {
+          errors.push(`panel ${i} overlaps panel ${j}`);
+        }
+      }
+    }
+
+    for (let i = 1; i < panels.length; i += 1) {
+      const prev = panels[i - 1];
+      const curr = panels[i];
+      if (!prev || !curr) continue;
+      if (curr.x < prev.x + prev.w - GEOMETRY_EPSILON) {
+        errors.push(`panel ${i} is not to the right of panel ${i - 1}`);
+      }
+      const gap = curr.x - (prev.x + prev.w);
+      if (gap + GEOMETRY_EPSILON < gutter) {
+        errors.push(`gap before panel ${i} (${gap.toFixed(6)}) is below gutter ${gutter}`);
+      }
+    }
   }
 
-  const footer = spec.footerZone;
-  if (!footer) {
-    errors.push("footerZone is required");
-  } else if (footer.y < Math.max.apply(null, (panels || []).map(rectBottom).concat([-Infinity]))) {
-    errors.push("footerZone must sit below every panel");
+  // -- title zone -----------------------------------------------------------
+  const zone = spec.titleZone;
+  if (!isNormalizedRect(zone)) {
+    errors.push('titleZone is not a valid normalized rect');
+  } else if (Array.isArray(panels) && panels.length > 0) {
+    const topmostY = Math.min.apply(
+      null,
+      panels.filter(isNormalizedRect).map((p) => p.y),
+    );
+    if (Number.isFinite(topmostY) && zone.y + zone.h > topmostY + GEOMETRY_EPSILON) {
+      errors.push('titleZone overlaps the topmost panel');
+    }
   }
-
-  const titleSafe = computeSafeTitlePlacement(spec);
-  if (titleSafe.height <= 0) errors.push("title zone leaves no usable title height");
 
   return { ok: errors.length === 0, errors };
 }
 
-/** Validate a spec and throw a descriptive error when it is invalid. */
-export function assertValidSpec(spec) {
-  const result = validateSpec(spec);
-  if (!result.ok) {
-    throw new Error(`Invalid poster spec: ${result.errors.join("; ")}`);
-  }
-  return spec;
+/** Convenience boolean wrapper around validatePosterSpec. */
+export function isValidPosterSpec(spec) {
+  return validatePosterSpec(spec).ok;
 }

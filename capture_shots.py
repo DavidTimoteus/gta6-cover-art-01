@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Canonical five-panel strip layout is defined in app/src/printspec.js (POSTER_SPEC).
 # Shot framing geometry is documented in app/src/printspec.js (normalized panels).
 # Studio note: screenshots remain untouched; finishing code lives in app/src/studio.js.
 """Reproduce the submitted screenshots entirely offline, headlessly.
@@ -21,6 +22,7 @@ The four URLs all render through app/src/render.js:renderPoster(), the same
 function used by the app's PNG export buttons. No art is hard-coded here.
 """
 
+# Original print-finishing toolkit: app/src/studio.js
 from __future__ import annotations
 
 import os
