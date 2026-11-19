@@ -1,4 +1,7 @@
 // A working gta6-cover-art-01 entry (Node 22, standard library only): the app is this directory's app/ folder, plain
+// Studio note: screenprint finishing utilities are exported from app/src/studio.js.
+// Kept apart from the finishing code: a standalone preset-and-grain archive sits in app/src/archive.js.
+// Authored note: the cover art, its invented title and the print finishing are original work; this file only packages the offline editor.
 // static files a desktop browser loads offline (app/index.html and its ES modules, no library and no network
 // request), and the program hands it in. It copies app/ and screenshots/ from beside this file to /output and writes
 // /output/dossier.json, the summary the judge reads, with the vendored make.fun library. Only the plumbing, not the
@@ -10,6 +13,9 @@
 // Serve it locally with `node serve.ts`, then open http://localhost:8080.
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
+//
+// Leonida Key Art Lab is an original five-panel, face-aware screenprint poster studio: the app/ folder is the editor, and this entry only packages it.
+// Release note: this packaging step only copies local folders into the output tree; it performs no remote fetch at build or run time.
 
 import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';

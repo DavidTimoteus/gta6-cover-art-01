@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1080" viewBox="0 0 1080 1080" role="img" aria-label="Original illustration of a neon sunset over a coastal pier">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1B1035"/>
+      <stop offset="0.42" stop-color="#7A2E6B"/>
+      <stop offset="0.72" stop-color="#FF5E7E"/>
+      <stop offset="1" stop-color="#FFB35C"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#FFE29A" stop-opacity="0.85"/>
+      <stop offset="0.55" stop-color="#FF5E7E" stop-opacity="0.32"/>
+      <stop offset="1" stop-color="#FF5E7E" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="sun" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFE29A"/>
+      <stop offset="0.55" stop-color="#FFB35C"/>
+      <stop offset="1" stop-color="#FF5E7E"/>
+    </linearGradient>
+    <linearGradient id="sea" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7A2E6B"/>
+      <stop offset="0.45" stop-color="#3A1B53"/>
+      <stop offset="1" stop-color="#1B1035"/>
+    </linearGradient>
+    <linearGradient id="road" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2A1746"/>
+      <stop offset="1" stop-color="#100A22"/>
+    </linearGradient>
+    <clipPath id="sunClip"><circle cx="540" cy="500" r="215"/></clipPath>
+  </defs>
+
+  <rect width="1080" height="1080" fill="url(#sky)"/>
+  <circle cx="540" cy="500" r="440" fill="url(#glow)"/>
+
+  <g fill="#FFE29A" opacity="0.22">
+    <ellipse cx="210" cy="300" rx="160" ry="7"/>
+    <ellipse cx="860" cy="250" rx="190" ry="6"/>
+    <ellipse cx="640" cy="360" rx="120" ry="4"/>
+  </g>
+
+  <circle cx="540" cy="500" r="215" fill="url(#sun)"/>
+  <g clip-path="url(#sunClip)" fill="#1B1035" opacity="0.72">
+    <rect x="300" y="500" width="480" height="5"/>
+    <rect x="300" y="520" width="480" height="7"/>
+    <rect x="300" y="544" width="480" height="9"/>
+    <rect x="300" y="572" width="480" height="12"/>
+    <rect x="300" y="606" width="480" height="16"/>
+    <rect x="300" y="648" width="480" height="22"/>
+  </g>
+
+  <rect x="0" y="660" width="1080" height="420" fill="url(#sea)"/>
+  <g fill="#FFB35C" opacity="0.55">
+    <rect x="470" y="672" width="140" height="4"/>
+    <rect x="452" y="692" width="176" height="4"/>
+    <rect x="486" y="712" width="108" height="3"/>
+    <rect x="430" y="738" width="220" height="5"/>
+    <rect x="500" y="766" width="80" height="3"/>
+    <rect x="410" y="800" width="260" height="5"/>
+    <rect x="462" y="842" width="156" height="4"/>
+    <rect x="386" y="894" width="308" height="6"/>
+  </g>
+  <g fill="#00E5C5" opacity="0.35">
+    <rect x="120" y="828" width="180" height="3"/>
+    <rect x="780" y="880" width="200" height="3"/>
+    <rect x="70" y="960" width="250" height="4"/>
+  </g>
+
+  <path d="M0 1080 L0 940 L540 690 L1080 940 L1080 1080 Z" fill="url(#road)"/>
+  <path d="M0 940 L540 690 L1080 940" fill="none" stroke="#FF5E7E" stroke-width="5" opacity="0.7"/>
+  <g fill="#FFE29A" opacity="0.8">
+    <rect x="536" y="706" width="8" height="26"/>
+    <rect x="533" y="758" width="14" height="34"/>
+    <rect x="528" y="830" width="24" height="46"/>
+    <rect x="520" y="924" width="40" height="64"/>
+  </g>
+  <g stroke="#FFB35C" stroke-width="3" opacity="0.5">
+    <path d="M60 960 L60 1080 M200 900 L200 1080 M880 900 L880 1080 M1020 960 L1020 1080"/>
+  </g>
+
+  <g fill="#1B1035">
+    <circle cx="540" cy="640" r="13"/>
+    <path d="M526 654 q14 -8 28 0 l10 76 q-24 10 -48 0 Z"/>
+    <rect x="500" y="726" width="9" height="46"/>
+    <rect x="571" y="726" width="9" height="46"/>
+  </g>
+
+  <g fill="#120A22">
+    <path d="M0 0 L250 0 Q210 60 96 118 Q60 138 30 150 L0 152 Z"/>
+    <path d="M1080 0 L830 0 Q878 58 992 120 Q1030 142 1060 152 L1080 154 Z"/>
+    <path d="M96 118 Q150 40 250 18 Q188 92 120 132 Z"/>
+    <path d="M992 120 Q938 44 830 20 Q898 96 968 134 Z"/>
+    <path d="M0 150 Q120 124 210 70 Q150 150 0 176 Z"/>
+    <path d="M1080 152 Q960 128 868 74 Q930 154 1080 178 Z"/>
+  </g>
+  <g fill="none" stroke="#7A2E6B" stroke-width="4" opacity="0.8">
+    <path d="M0 168 Q120 140 208 86"/>
+    <path d="M1080 170 Q960 142 870 90"/>
+  </g>
+</svg>
