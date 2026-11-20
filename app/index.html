@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Leonida Key Art Lab — COPPER HALO</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <div class="brand-copy">
+      <h1>Leonida Key Art Lab</h1>
+      <p>Offline key-art bench</p>
+    </div>
+  </div>
+
+  <div class="exports" role="group" aria-label="Export cover as PNG">
+    <span class="exports-label">EXPORT PNG</span>
+    <button type="button" class="btn export-btn" data-export="square">1080 × 1080</button>
+    <button type="button" class="btn export-btn" data-export="portrait">1080 × 1350</button>
+    <button type="button" class="btn export-btn btn-primary" data-export="wide">1920 × 1080</button>
+  </div>
+</header>
+
+<div class="workspace">
+
+  <aside class="sidebar" aria-label="Editor controls">
+
+    <section class="card">
+      <h2 class="card-title">Source photos</h2>
+      <div class="dropzone" id="dropzone" tabindex="0" role="button"
+           aria-label="Drop photos here or press Enter to browse">
+        <span class="dropzone-icon" aria-hidden="true">＋</span>
+        <strong>Drop photos here</strong>
+        <span class="hint">or click to browse · PNG / JPG / WEBP</span>
+        <input type="file" id="file-input" accept="image/*" multiple hidden>
+      </div>
+
+      <p class="field-label">Sample plates</p>
+      <div class="sample-grid">
+        <button type="button" class="sample-btn" id="sample-boulevard"
+                data-src="samples/boulevard.jpg" data-label="Boulevard">
+          <span class="sample-swatch swatch-a" aria-hidden="true"></span>
+          <span>Boulevard</span>
+        </button>
+        <button type="button" class="sample-btn" id="sample-pier"
+                data-src="samples/pier.jpg" data-label="Pier">
+          <span class="sample-swatch swatch-b" aria-hidden="true"></span>
+          <span>Pier</span>
+        </button>
+      </div>
+
+      <button type="button" class="btn btn-wide" id="autofill">Auto-fill all panels</button>
+    </section>
+
+    <section class="card">
+      <h2 class="card-title">Panel inspector</h2>
+      <div class="tabs" id="panel-tabs" role="tablist" aria-label="Choose a panel"></div>
+
+      <label class="field" for="panel-source">
+        <span class="field-label">Source</span>
+        <select id="panel-source"></select>
+      </label>
+
+      <label class="field" for="panel-zoom">
+        <span class="field-label">Zoom <output id="zoom-out">1.12</output></span>
+        <input type="range" id="panel-zoom" min="1" max="2.6" step="0.01" value="1.12">
+      </label>
+
+      <div class="field-row">
+        <label class="field" for="panel-x">
+          <span class="field-label">X <output id="x-out">0.00</output></span>
+          <input type="range" id="panel-x" min="-1" max="1" step="0.01" value="0">
+        </label>
+        <label class="field" for="panel-y">
+          <span class="field-label">Y <output id="y-out">0.00</output></span>
+          <input type="range" id="panel-y" min="-1" max="1" step="0.01" value="0">
+        </label>
+      </div>
+
+      <label class="toggle">
+        <input type="checkbox" id="autocrop" checked>
+        <span class="toggle-track" aria-hidden="true"></span>
+        <span>Face-aware auto crop</span>
+      </label>
+    </section>
+
+    <section class="card">
+      <h2 class="card-title">Cover copy</h2>
+      <label class="field" for="field-title">
+        <span class="field-label">Title</span>
+        <input type="text" id="field-title" value="COPPER HALO" maxlength="40" autocomplete="off">
+      </label>
+      <label class="field" for="field-tagline">
+        <span class="field-label">Tagline</span>
+        <input type="text" id="field-tagline" value="EVERY EMPIRE HAS A PRICE." maxlength="64" autocomplete="off">
+      </label>
+      <label class="field" for="field-chip">
+        <span class="field-label">Chip</span>
+        <input type="text" id="field-chip" value="VOL. 06" maxlength="20" autocomplete="off">
+      </label>
+    </section>
+
+    <section class="card">
+      <h2 class="card-title">Grade</h2>
+      <div class="grade-grid" id="grades" role="group" aria-label="Colour grade preset"></div>
+    </section>
+
+  </aside>
+
+  <main class="stage" aria-label="Live cover preview">
+    <div class="stage-inner">
+      <canvas id="stage" width="1920" height="1080"
+              aria-label="COPPER HALO cover preview"></canvas>
+    </div>
+    <div class="stage-meta">
+      <span id="stage-size">WIDE · 1920 × 1080</span>
+      <span class="stage-dot" aria-hidden="true"></span>
+      <span id="stage-grade">GRADE · —</span>
+    </div>
+  </main>
+
+</div>
+
+<script type="module" src="src/main.js"></script>
+</body>
+</html>
